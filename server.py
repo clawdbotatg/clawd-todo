@@ -137,7 +137,16 @@ class Handler(BaseHTTPRequestHandler):
             f = HERE / name
             if not f.exists():
                 return self._send(404, {"error": "missing " + name})
-            return self._send(200, f.read_bytes(), ctype)
+            body = f.read_bytes()
+            # Installed-PWA token handoff: iOS gives a home-screen web app its
+            # own storage, so the manifest's start_url must carry the token.
+            # The page requests the manifest with ?t=<token>; only an authed
+            # request gets the tokenized start_url (the bare manifest leaks
+            # nothing).
+            if name == "manifest.webmanifest" and self._authed():
+                body = body.replace(b'"start_url": "/"',
+                                    b'"start_url": "/?t=' + TOKEN.encode() + b'"')
+            return self._send(200, body, ctype)
         if path == "/api/todos":
             if not self._authed():
                 return self._send(401, {"error": "bad token"})
