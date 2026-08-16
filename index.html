@@ -86,12 +86,15 @@
   }
   #donelist.hidden { display: none; }
   #empty { color: var(--dim); text-align: center; padding: 40px 0 20px; }
-  #notoken { color: var(--danger); text-align: center; padding: 40px 14px; line-height: 2; }
-  #tokenbox {
-    display: block; width: 100%; margin-top: 10px;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-    color: var(--text); font: inherit; font-size: 15px; padding: 12px 14px; outline: none;
+  #lock { text-align: center; padding: 60px 14px; display: none; }
+  #lock .bigbtn {
+    background: var(--accent); color: #05240f; border: 0; border-radius: 16px;
+    font: inherit; font-size: 19px; font-weight: 700; padding: 16px 28px;
+    cursor: pointer; margin-top: 18px;
   }
+  #lock .bigbtn:active { transform: scale(.96); }
+  #lockmsg { color: var(--dim); }
+  #lockerr { color: var(--danger); margin-top: 14px; min-height: 1.4em; }
 
   #toast {
     position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom));
@@ -125,10 +128,11 @@
     <button class="clear" id="clearbtn">clear</button>
   </div>
   <div id="donelist"></div>
-  <div id="notoken" style="display:none">
-    no token — open this page once via its <b>?t=…</b> link,<br>
-    or paste the link (or just the token) here:
-    <input id="tokenbox" type="text" placeholder="https://todo.atg.link/?t=…" autocomplete="off">
+  <div id="lock">
+    <div style="font-size:44px">🔒</div>
+    <div id="lockmsg">locked</div>
+    <button class="bigbtn" id="lockbtn">unlock</button>
+    <div id="lockerr"></div>
   </div>
 </div>
 <div id="toast"><span id="toastmsg"></span><button id="undobtn">undo</button></div>
@@ -138,31 +142,107 @@
 const $ = id => document.getElementById(id);
 
 // ---- token: ?t= once, then localStorage (so the installed PWA works) ----
+// Auth: passkey (Face ID) -> 24h HttpOnly cookie. A bearer token in ?t= or
+// localStorage still works for dev/testing, but phones never see one.
 const qs = new URLSearchParams(location.search);
 if (qs.get("t")) localStorage.setItem("todo_t", qs.get("t"));
 const TOKEN = localStorage.getItem("todo_t") || "";
-
-// iOS home-screen apps get isolated storage, so the manifest must carry the
-// token in start_url — request it with ?t= and the server bakes it in.
-if (TOKEN) {
-  document.querySelector('link[rel="manifest"]')
-    .href = "/manifest.webmanifest?t=" + encodeURIComponent(TOKEN);
-}
+const ENROLL = qs.get("enroll") || "";
 
 let todos = [];        // server truth (with optimistic edits applied)
 let rev = -1;
 let lastDeleted = null, toastTimer = null;
 
 function api(path, opts = {}) {
-  opts.headers = Object.assign({ "Authorization": "Bearer " + TOKEN }, opts.headers);
+  opts.headers = Object.assign({}, opts.headers);
+  if (TOKEN) opts.headers["Authorization"] = "Bearer " + TOKEN;
   if (opts.body) opts.headers["Content-Type"] = "application/json";
   return fetch(path, opts).then(r => {
-    if (r.status === 401) { $("notoken").style.display = "block"; throw new Error("401"); }
+    if (r.status === 401) { showLock(); throw new Error("401"); }
     if (!r.ok) throw new Error("http " + r.status);
     $("net").textContent = ""; $("net").className = "";
     return r.json();
-  }).catch(e => { $("net").textContent = "offline"; $("net").className = "err"; throw e; });
+  }).catch(e => {
+    if (e.message !== "401") { $("net").textContent = "offline"; $("net").className = "err"; }
+    throw e;
+  });
 }
+
+// ---- passkey lock screen ----------------------------------------------
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf)))
+  .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const ub64 = s => Uint8Array.from(
+  atob(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - s.length % 4) % 4)),
+  c => c.charCodeAt(0));
+
+function showLock() {
+  $("lock").style.display = "block";
+  document.getElementById("addrow").style.display = "none";
+  if (ENROLL) {
+    $("lockmsg").textContent = "set up Face ID for this device";
+    $("lockbtn").textContent = "➕ enroll Face ID";
+  } else {
+    $("lockmsg").textContent = "face scan to open (once a day)";
+    $("lockbtn").textContent = "🔓 unlock";
+  }
+}
+function hideLock() {
+  $("lock").style.display = "none";
+  document.getElementById("addrow").style.display = "flex";
+  $("lockerr").textContent = "";
+}
+
+async function pjson(path, body) {
+  const r = await fetch(path, { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || ("http " + r.status));
+  return d;
+}
+
+async function doEnroll() {
+  const c = await pjson("/auth/challenge", { purpose: "register", code: ENROLL });
+  const cred = await navigator.credentials.create({ publicKey: {
+    challenge: ub64(c.challenge),
+    rp: { id: c.rpId, name: "todo" },
+    user: { id: crypto.getRandomValues(new Uint8Array(16)),
+            name: "austin", displayName: "austin" },
+    pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+    authenticatorSelection: { residentKey: "preferred", userVerification: "required" },
+    timeout: 60000 } });
+  await pjson("/auth/register", {
+    code: ENROLL, id: cred.id,
+    spki: btoa(String.fromCharCode(...new Uint8Array(cred.response.getPublicKey()))),
+    alg: cred.response.getPublicKeyAlgorithm(),
+    clientDataJSON: b64u(cred.response.clientDataJSON),
+    authenticatorData: b64u(cred.response.getAuthenticatorData()),
+    label: navigator.platform || "" });
+  history.replaceState(null, "", "/");
+}
+
+async function doLogin() {
+  const c = await pjson("/auth/challenge", { purpose: "login" });
+  const cred = await navigator.credentials.get({ publicKey: {
+    challenge: ub64(c.challenge), rpId: c.rpId, userVerification: "required",
+    allowCredentials: (c.credIds || []).map(id =>
+      ({ type: "public-key", id: ub64(id), transports: ["internal"] })),
+    timeout: 60000 } });
+  await pjson("/auth/login", {
+    id: cred.id,
+    clientDataJSON: b64u(cred.response.clientDataJSON),
+    authenticatorData: b64u(cred.response.authenticatorData),
+    signature: b64u(cred.response.signature) });
+}
+
+$("lockbtn").onclick = async () => {
+  $("lockerr").textContent = "";
+  try {
+    await (ENROLL ? doEnroll() : doLogin());
+    hideLock(); rev = -1; refresh();
+  } catch (e) {
+    $("lockerr").textContent = e.message || "failed";
+  }
+};
 
 function render() {
   const open = todos.filter(t => !t.done);
@@ -199,8 +279,8 @@ function fill(el, list) {
 }
 
 function refresh() {
-  if (!TOKEN) { $("notoken").style.display = "block"; return; }
   api("/api/todos").then(d => {
+    hideLock();
     if (d.rev !== rev) { rev = d.rev; todos = d.todos; render(); }
   }).catch(() => {});
 }
@@ -245,21 +325,6 @@ $("undobtn").onclick = () => {
   api("/api/todos", { method: "POST", body: JSON.stringify({ text: t.text, via: t.via || "web" }) })
     .then(() => refresh()).catch(() => {});
 };
-
-$("tokenbox").addEventListener("keydown", e => {
-  if (e.key !== "Enter") return;
-  saveToken(e.target.value);
-});
-$("tokenbox").addEventListener("paste", e => {
-  setTimeout(() => saveToken($("tokenbox").value), 50);
-});
-function saveToken(v) {
-  v = v.trim();
-  try { const u = new URL(v); v = new URLSearchParams(u.search).get("t") || v; } catch (e) {}
-  if (!v) return;
-  localStorage.setItem("todo_t", v);
-  location.href = "/?t=" + encodeURIComponent(v);
-}
 
 $("clearbtn").onclick = e => {
   e.stopPropagation();

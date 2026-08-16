@@ -14,6 +14,8 @@ Usage:
     todo undone <id>           reopen an item
     todo rm <id|substring>     delete an item
     todo clear                 remove all done items
+    todo enroll                print a one-time link (15 min) that lets a
+                               new device register its Face ID / passkey
 
 ids are the 8-hex-char ids shown by `todo list`; anywhere an id is
 accepted, a unique substring of the item's text works too.
@@ -122,6 +124,10 @@ def main():
         print(f"deleted  {t['text']}")
     elif cmd == "clear":
         print(f"removed {api('POST', '/api/clear_done')['removed']} done item(s)")
+    elif cmd == "enroll":
+        d = api("POST", "/auth/arm_enroll", {})
+        print(f"open this on the new device within {d['expires_in'] // 60} min:")
+        print(d["url"])
     elif cmd in ("-h", "--help", "help"):
         print(__doc__.strip())
     else:

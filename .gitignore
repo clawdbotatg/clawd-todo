@@ -1,4 +1,6 @@
 .clawd-todo.token
+.clawd-todo.auth.json
+.clawd-todo.auth.json.tmp
 .clawd-todo.env
 todos.json
 todos.json.tmp

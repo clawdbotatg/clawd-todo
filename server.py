@@ -11,13 +11,23 @@ so UI edits need no restart) and a small REST API:
   DELETE /api/todos/<id>          -> {"ok": true}
   POST   /api/clear_done          -> {"removed": N}
 
-Auth: every /api/* call needs the token, as `Authorization: Bearer <t>`
-or `?t=<t>`. Static files are served without auth (the UI is useless
-without the token, same stance as clawd-harness).
+Auth, two lanes (same stance as the clawd-harness fleet UI):
+  - machines: `Authorization: Bearer <token>` or `?t=<token>` — the token
+    never goes to a phone.
+  - humans: a passkey (WebAuthn / Face ID, rpId = TODO_RPID) traded for a
+    24h HttpOnly session cookie. Enrollment of a new device needs a
+    one-time code, armed via POST /auth/arm_enroll (bearer-token only).
+
+Endpoints: POST /auth/challenge, /auth/register, /auth/login, /auth/logout,
+/auth/arm_enroll. Passkeys + sessions persist in .clawd-todo.auth.json.
 
 Env: TODO_PORT (8794), TODO_HOST (127.0.0.1), TODO_TOKEN or
-TODO_TOKEN_FILE (.clawd-todo.token, auto-generated), TODO_DATA (todos.json).
+TODO_TOKEN_FILE (.clawd-todo.token, auto-generated), TODO_DATA (todos.json),
+TODO_RPID (todo.atg.link), TODO_ORIGIN (https://todo.atg.link),
+TODO_SESSION_TTL (86400).
 """
+import base64
+import hashlib
 import json
 import os
 import re
@@ -27,6 +37,14 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
+
+try:
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec, padding
+    from cryptography.hazmat.primitives.serialization import load_der_public_key
+    HAVE_CRYPTO = True
+except ImportError:  # passkey endpoints degrade to 501; token auth still works
+    HAVE_CRYPTO = False
 
 HERE = Path(__file__).resolve().parent
 PORT = int(os.environ.get("TODO_PORT", "8794"))
@@ -58,6 +76,98 @@ def load_token() -> str:
 
 TOKEN = load_token()
 LOCK = threading.Lock()
+
+# ---- passkey auth ------------------------------------------------------
+RPID = os.environ.get("TODO_RPID", "todo.atg.link")
+ORIGIN = os.environ.get("TODO_ORIGIN", "https://todo.atg.link")
+SESSION_TTL = int(os.environ.get("TODO_SESSION_TTL", "86400"))
+AUTH_FILE = Path(os.environ.get("TODO_AUTH", HERE / ".clawd-todo.auth.json"))
+ENROLL_TTL = 900
+CHAL_TTL = 300
+
+# in-memory only; short-lived
+CHALLENGES = {}  # b64url challenge -> (purpose, exp)
+
+
+def _b64u(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def _ub64(s: str) -> bytes:
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _load_auth():
+    try:
+        a = json.loads(AUTH_FILE.read_text())
+        assert isinstance(a.get("passkeys"), list)
+        a.setdefault("sessions", {})
+        a.setdefault("enroll", None)
+        return a
+    except Exception:
+        return {"passkeys": [], "sessions": {}, "enroll": None}
+
+
+AUTH = _load_auth()
+
+
+def _save_auth():
+    tmp = AUTH_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(AUTH, indent=1))
+    tmp.chmod(0o600)
+    tmp.replace(AUTH_FILE)
+
+
+def _prune_auth():
+    now = time.time()
+    stale = [sid for sid, exp in AUTH["sessions"].items() if exp < now]
+    for sid in stale:
+        del AUTH["sessions"][sid]
+    if AUTH["enroll"] and AUTH["enroll"]["exp"] < now:
+        AUTH["enroll"] = None
+    if stale:
+        _save_auth()
+    for c, (_, exp) in list(CHALLENGES.items()):
+        if exp < now:
+            del CHALLENGES[c]
+
+
+def _new_session():
+    sid = secrets.token_hex(24)
+    AUTH["sessions"][sid] = time.time() + SESSION_TTL
+    _save_auth()
+    secure = "; Secure" if ORIGIN.startswith("https") else ""
+    return (f"sid={sid}; Path=/; Max-Age={SESSION_TTL}; "
+            f"HttpOnly; SameSite=Strict{secure}")
+
+
+def _take_challenge(cdj: dict, purpose: str) -> bool:
+    chal = cdj.get("challenge", "")
+    got = CHALLENGES.pop(chal, None)
+    return bool(got and got[0] == purpose and got[1] >= time.time()
+                and cdj.get("origin") == ORIGIN)
+
+
+def _auth_ok_ad(ad: bytes) -> bool:
+    """rpIdHash matches and both User-Present + User-Verified bits set."""
+    return (len(ad) >= 37
+            and ad[:32] == hashlib.sha256(RPID.encode()).digest()
+            and (ad[32] & 0x01) and (ad[32] & 0x04))
+
+
+def _verify_sig(pk_entry, authdata: bytes, cdj_raw: bytes, sig: bytes) -> bool:
+    data = authdata + hashlib.sha256(cdj_raw).digest()
+    try:
+        pub = load_der_public_key(base64.b64decode(pk_entry["spki"]))
+        if pk_entry["alg"] == -7:
+            pub.verify(sig, data, ec.ECDSA(hashes.SHA256()))
+        elif pk_entry["alg"] == -257:
+            pub.verify(sig, data, padding.PKCS1v15(), hashes.SHA256())
+        else:
+            return False
+        return True
+    except Exception:
+        return False
 
 
 def _load_state():
@@ -98,19 +208,21 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     # ---- helpers -------------------------------------------------
-    def _send(self, code, body, ctype="application/json"):
+    def _send(self, code, body, ctype="application/json", cookie=None):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         try:
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError):
             pass
 
-    def _authed(self) -> bool:
+    def _token_authed(self) -> bool:
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer ") and secrets.compare_digest(auth[7:].strip(), TOKEN):
             return True
@@ -119,6 +231,20 @@ class Handler(BaseHTTPRequestHandler):
             if secrets.compare_digest(t, TOKEN):
                 return True
         return False
+
+    def _cookie_authed(self) -> bool:
+        cookies = self.headers.get("Cookie", "")
+        for part in cookies.split(";"):
+            k, _, v = part.strip().partition("=")
+            if k == "sid" and AUTH["sessions"].get(v, 0) >= time.time():
+                # cookie-authed browser writes must come from our own page
+                origin = self.headers.get("Origin", "")
+                return origin in ("", ORIGIN)
+        return False
+
+    def _authed(self) -> bool:
+        _prune_auth()
+        return self._token_authed() or self._cookie_authed()
 
     def _body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -137,16 +263,7 @@ class Handler(BaseHTTPRequestHandler):
             f = HERE / name
             if not f.exists():
                 return self._send(404, {"error": "missing " + name})
-            body = f.read_bytes()
-            # Installed-PWA token handoff: iOS gives a home-screen web app its
-            # own storage, so the manifest's start_url must carry the token.
-            # The page requests the manifest with ?t=<token>; only an authed
-            # request gets the tokenized start_url (the bare manifest leaks
-            # nothing).
-            if name == "manifest.webmanifest" and self._authed():
-                body = body.replace(b'"start_url": "/"',
-                                    b'"start_url": "/?t=' + TOKEN.encode() + b'"')
-            return self._send(200, body, ctype)
+            return self._send(200, f.read_bytes(), ctype)
         if path == "/api/todos":
             if not self._authed():
                 return self._send(401, {"error": "bad token"})
@@ -158,10 +275,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path.startswith("/auth/"):
+            return self._auth_route(path)
         if not path.startswith("/api/"):
             return self._send(404, {"error": "not found"})
         if not self._authed():
-            return self._send(401, {"error": "bad token"})
+            return self._send(401, {"error": "unauthorized"})
 
         if path == "/api/todos":
             body = self._body()
@@ -207,6 +326,100 @@ class Handler(BaseHTTPRequestHandler):
                 STATE["rev"] += 1
                 _save_state()
                 return self._send(200, todo)
+
+        return self._send(404, {"error": "not found"})
+
+    def _auth_route(self, path):
+        _prune_auth()
+        body = self._body()
+
+        if path == "/auth/arm_enroll":
+            # bearer token ONLY — this is the machine-side act that lets a
+            # new device enroll a passkey (mirrors the fleet's deliberate-act
+            # registration rule).
+            if not self._token_authed():
+                return self._send(401, {"error": "token required"})
+            code = secrets.token_hex(6)
+            AUTH["enroll"] = {"code": code, "exp": time.time() + ENROLL_TTL}
+            _save_auth()
+            return self._send(200, {"url": f"{ORIGIN}/?enroll={code}",
+                                    "expires_in": ENROLL_TTL})
+
+        if not HAVE_CRYPTO:
+            return self._send(501, {"error": "cryptography not installed"})
+
+        if path == "/auth/challenge":
+            purpose = body.get("purpose")
+            if purpose == "register":
+                e = AUTH["enroll"]
+                if not (e and e["exp"] >= time.time()
+                        and secrets.compare_digest(str(body.get("code", "")), e["code"])):
+                    return self._send(403, {"error": "no valid enroll code"})
+            elif purpose == "login":
+                if not AUTH["passkeys"]:
+                    return self._send(403, {"error": "no passkeys enrolled"})
+            else:
+                return self._send(400, {"error": "bad purpose"})
+            chal = _b64u(secrets.token_bytes(32))
+            CHALLENGES[chal] = (purpose, time.time() + CHAL_TTL)
+            out = {"challenge": chal, "rpId": RPID}
+            if purpose == "login":
+                out["credIds"] = [p["id"] for p in AUTH["passkeys"]]
+            return self._send(200, out)
+
+        if path == "/auth/register":
+            e = AUTH["enroll"]
+            if not (e and e["exp"] >= time.time()
+                    and secrets.compare_digest(str(body.get("code", "")), e["code"])):
+                return self._send(403, {"error": "no valid enroll code"})
+            try:
+                cdj_raw = _ub64(body["clientDataJSON"])
+                cdj = json.loads(cdj_raw)
+                ad = _ub64(body["authenticatorData"])
+                alg = int(body["alg"])
+                spki = base64.b64decode(body["spki"])
+                load_der_public_key(spki)  # must parse
+            except Exception:
+                return self._send(400, {"error": "bad credential payload"})
+            if cdj.get("type") != "webauthn.create" or not _take_challenge(cdj, "register"):
+                return self._send(403, {"error": "challenge/origin mismatch"})
+            if not _auth_ok_ad(ad) or alg not in (-7, -257):
+                return self._send(403, {"error": "authenticator rejected"})
+            AUTH["passkeys"].append({
+                "id": body["id"], "spki": base64.b64encode(spki).decode(),
+                "alg": alg, "added": _now(),
+                "label": str(body.get("label", ""))[:60]})
+            AUTH["enroll"] = None
+            cookie = _new_session()
+            return self._send(200, {"ok": True}, cookie=cookie)
+
+        if path == "/auth/login":
+            pk = next((p for p in AUTH["passkeys"] if p["id"] == body.get("id")), None)
+            if not pk:
+                return self._send(403, {"error": "unknown credential"})
+            try:
+                cdj_raw = _ub64(body["clientDataJSON"])
+                cdj = json.loads(cdj_raw)
+                ad = _ub64(body["authenticatorData"])
+                sig = _ub64(body["signature"])
+            except Exception:
+                return self._send(400, {"error": "bad assertion payload"})
+            if cdj.get("type") != "webauthn.get" or not _take_challenge(cdj, "login"):
+                return self._send(403, {"error": "challenge/origin mismatch"})
+            if not _auth_ok_ad(ad) or not _verify_sig(pk, ad, cdj_raw, sig):
+                return self._send(403, {"error": "verification failed"})
+            cookie = _new_session()
+            return self._send(200, {"ok": True}, cookie=cookie)
+
+        if path == "/auth/logout":
+            cookies = self.headers.get("Cookie", "")
+            for part in cookies.split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == "sid":
+                    AUTH["sessions"].pop(v, None)
+            _save_auth()
+            return self._send(200, {"ok": True},
+                              cookie="sid=; Path=/; Max-Age=0; HttpOnly")
 
         return self._send(404, {"error": "not found"})
 
