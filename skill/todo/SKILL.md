@@ -16,7 +16,11 @@ todo undone <id>        # reopen
 todo rm <id|words>      # delete
 todo list --all         # include finished items
 todo clear              # purge finished items
+todo enroll             # one-time link (15 min) to add a new device's Face ID
 ```
+
+If Austin says the todo app is locked out on his phone or he got a new
+device, run `todo enroll` and give him the printed link.
 
 If `todo` is not on PATH, use `~/bin/todo`. Config lives in
 `~/.clawd-todo.env` (TODO_URL + TODO_TOKEN); if that file is missing on this

@@ -4,10 +4,11 @@ Austin's one shared todo list: a mobile PWA at **https://todo.atg.link** plus a
 token-authed REST API, so every agent on every machine can read, add, and
 check off items.
 
-- **Phone**: open `https://todo.atg.link/?t=<token>` once, then Share → Add to
-  Home Screen. The token persists in localStorage; the installed app opens
-  straight to the list. Installable PWA (manifest + service worker,
-  offline-readable shell).
+- **Phone**: passkey auth, like the clawd-harness fleet UI — enroll once via a
+  one-time link (`todo enroll`), then one Face ID scan per 24h (HttpOnly
+  SameSite=Strict session cookie). Tokens never go to a phone. Installable PWA
+  (manifest + service worker, offline-readable shell): Share → Add to Home
+  Screen.
 - **Agents / any machine**: the `todo` CLI (`cli/todo`) + a Claude skill
   (`skill/todo/SKILL.md`). Run `./install_local.sh` on a machine to symlink
   the CLI to `~/bin/todo` and the skill into every Claude config dir
@@ -24,7 +25,14 @@ check off items.
 `TODO_TOKEN`. Static files are read from disk per request, so UI edits deploy
 without a restart.
 
-API (all need `Authorization: Bearer <token>` or `?t=`):
+Auth endpoints: `POST /auth/arm_enroll` (bearer-only; mints a 15-min one-time
+enroll URL), `/auth/challenge`, `/auth/register`, `/auth/login`, `/auth/logout`.
+WebAuthn assertions are verified server-side (challenge + origin + rpIdHash +
+UP/UV flags + ES256/RS256 signature, via `cryptography`); passkeys and sessions
+persist in `.clawd-todo.auth.json` (0600). `TODO_RPID`/`TODO_ORIGIN` default to
+todo.atg.link.
+
+API (all need `Authorization: Bearer <token>`, `?t=`, or a session cookie):
 
 ```
 GET    /api/todos            -> {"rev": N, "todos": [{id,text,done,created,done_at,via}]}
