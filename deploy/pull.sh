@@ -4,7 +4,7 @@
 set -e
 cd /home/ubuntu/clawd-todo
 git fetch -q origin main
-[ -n "$(git status --porcelain)" ] && { echo "dirty tree, skipping"; exit 0; }
+[ -n "$(git status --porcelain -uno)" ] && { echo "dirty tree, skipping"; exit 0; }
 LOCAL=$(git rev-parse HEAD); REMOTE=$(git rev-parse origin/main)
 [ "$LOCAL" = "$REMOTE" ] && exit 0
 CHANGED=$(git diff --name-only "$LOCAL" "$REMOTE")
