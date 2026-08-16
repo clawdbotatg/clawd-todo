@@ -1,0 +1,7 @@
+.clawd-todo.token
+.clawd-todo.env
+todos.json
+todos.json.tmp
+*.pyc
+__pycache__/
+.DS_Store

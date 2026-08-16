@@ -1,0 +1,7 @@
+[Unit]
+Description=clawd-todo git pull deploy
+
+[Service]
+Type=oneshot
+User=ubuntu
+ExecStart=/home/ubuntu/clawd-todo/deploy/pull.sh

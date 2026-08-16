@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""todo — CLI for Austin's shared todo list (todo.atg.link).
+
+Config: ~/.clawd-todo.env with
+    TODO_URL=https://todo.atg.link
+    TODO_TOKEN=<token>
+(or the same names in the environment; env wins.)
+
+Usage:
+    todo                       list open items
+    todo list [-a|--all]       list (with --all: also done items)
+    todo add <text...>         add an item
+    todo done <id|substring>   check an item off
+    todo undone <id>           reopen an item
+    todo rm <id|substring>     delete an item
+    todo clear                 remove all done items
+
+ids are the 8-hex-char ids shown by `todo list`; anywhere an id is
+accepted, a unique substring of the item's text works too.
+Exit codes: 0 ok, 1 error, 2 ambiguous/no match.
+"""
+import json
+import os
+import sys
+import urllib.request
+from pathlib import Path
+
+ENV_FILE = Path.home() / ".clawd-todo.env"
+
+
+def load_cfg():
+    cfg = {}
+    if ENV_FILE.exists():
+        for line in ENV_FILE.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                cfg[k.strip()] = v.strip().strip('"')
+    url = os.environ.get("TODO_URL") or cfg.get("TODO_URL", "https://todo.atg.link")
+    tok = os.environ.get("TODO_TOKEN") or cfg.get("TODO_TOKEN", "")
+    if not tok:
+        sys.exit("todo: no TODO_TOKEN — put it in ~/.clawd-todo.env")
+    return url.rstrip("/"), tok
+
+
+def api(method, path, body=None):
+    url, tok = CFG
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url + path, data=data, method=method, headers={
+        "Authorization": "Bearer " + tok,
+        "Content-Type": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        sys.exit(f"todo: {e.code} {e.read().decode()[:200]}")
+    except Exception as e:
+        sys.exit(f"todo: cannot reach {url} ({e})")
+
+
+def fetch():
+    return api("GET", "/api/todos")["todos"]
+
+
+def resolve(needle, pool):
+    """id prefix first, then unique case-insensitive text substring."""
+    byid = [t for t in pool if t["id"].startswith(needle.lower())]
+    if len(byid) == 1:
+        return byid[0]
+    bytext = [t for t in pool if needle.lower() in t["text"].lower()]
+    if len(bytext) == 1:
+        return bytext[0]
+    hits = byid or bytext
+    if not hits:
+        print(f"todo: nothing matches {needle!r}", file=sys.stderr)
+    else:
+        print(f"todo: {needle!r} is ambiguous:", file=sys.stderr)
+        for t in hits[:8]:
+            print(f"  {t['id']}  {t['text']}", file=sys.stderr)
+    sys.exit(2)
+
+
+def show(items, all_=False):
+    shown = 0
+    for t in items:
+        if t["done"] and not all_:
+            continue
+        mark = "x" if t["done"] else " "
+        via = f"  (via {t['via']})" if t.get("via") and t["via"] != "web" else ""
+        print(f"[{mark}] {t['id']}  {t['text']}{via}")
+        shown += 1
+    if not shown:
+        print("nothing to do" if not all_ else "list is empty")
+
+
+def main():
+    args = sys.argv[1:]
+    cmd = args[0] if args else "list"
+
+    if cmd in ("list", "ls"):
+        show(fetch(), all_=any(a in ("-a", "--all") for a in args[1:]))
+    elif cmd == "add":
+        text = " ".join(args[1:]).strip()
+        if not text:
+            sys.exit("todo: add what?")
+        via = os.environ.get("TODO_VIA") or os.environ.get("CLAUDE_PROJECT_DIR", "")
+        via = "claude:" + Path(via).name if via else "cli"
+        t = api("POST", "/api/todos", {"text": text, "via": via})
+        print(f"added {t['id']}  {t['text']}")
+    elif cmd == "done":
+        t = resolve(" ".join(args[1:]), [x for x in fetch() if not x["done"]])
+        api("POST", "/api/todos/" + t["id"], {"done": True})
+        print(f"done ✓  {t['text']}")
+    elif cmd == "undone":
+        t = resolve(" ".join(args[1:]), [x for x in fetch() if x["done"]])
+        api("POST", "/api/todos/" + t["id"], {"done": False})
+        print(f"reopened  {t['text']}")
+    elif cmd == "rm":
+        t = resolve(" ".join(args[1:]), fetch())
+        api("DELETE", "/api/todos/" + t["id"])
+        print(f"deleted  {t['text']}")
+    elif cmd == "clear":
+        print(f"removed {api('POST', '/api/clear_done')['removed']} done item(s)")
+    elif cmd in ("-h", "--help", "help"):
+        print(__doc__.strip())
+    else:
+        sys.exit(f"todo: unknown command {cmd!r} (try: todo help)")
+
+
+if __name__ == "__main__":
+    CFG = load_cfg()
+    main()

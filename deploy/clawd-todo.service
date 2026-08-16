@@ -1,0 +1,13 @@
+[Unit]
+Description=clawd-todo server (todo.atg.link)
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/clawd-todo
+ExecStart=/usr/bin/python3 /home/ubuntu/clawd-todo/server.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>todo</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0e1117">
+<style>
+  :root {
+    --bg: #0e1117; --panel: #161b24; --line: #232a38;
+    --text: #e6e9f0; --dim: #7d8799; --accent: #4ade80;
+    --accent-dim: #1d3a2a; --danger: #f87171;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 17px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom);
+    overscroll-behavior-y: contain;
+  }
+  #app { max-width: 640px; margin: 0 auto; padding: 10px 14px 90px; }
+  header { display: flex; align-items: baseline; gap: 10px; padding: 8px 2px 12px; }
+  header h1 { font-size: 22px; margin: 0; letter-spacing: .5px; }
+  header .count { color: var(--dim); font-size: 14px; }
+  #net { margin-left: auto; font-size: 12px; color: var(--dim); }
+  #net.err { color: var(--danger); }
+
+  #addrow {
+    display: flex; gap: 8px; margin-bottom: 14px;
+    position: sticky; top: env(safe-area-inset-top); z-index: 5;
+    background: var(--bg); padding: 6px 0 10px;
+  }
+  #addbox {
+    flex: 1; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; color: var(--text); font: inherit;
+    padding: 13px 16px; outline: none; min-width: 0;
+  }
+  #addbox:focus { border-color: var(--accent); }
+  #addbtn {
+    background: var(--accent); color: #05240f; border: 0; border-radius: 14px;
+    font: inherit; font-weight: 700; font-size: 24px; width: 54px;
+    flex: none; cursor: pointer;
+  }
+  #addbtn:active { transform: scale(.94); }
+
+  .todo {
+    display: flex; align-items: flex-start; gap: 12px;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 13px 12px 13px 14px; margin-bottom: 8px;
+    transition: opacity .15s;
+  }
+  .todo .tick {
+    flex: none; width: 28px; height: 28px; margin-top: 1px;
+    border: 2px solid var(--dim); border-radius: 50%;
+    background: none; cursor: pointer; position: relative;
+  }
+  .todo .tick:active { transform: scale(.88); }
+  .todo.done .tick { border-color: var(--accent); background: var(--accent-dim); }
+  .todo.done .tick::after {
+    content: "✓"; color: var(--accent); font-size: 17px; font-weight: 800;
+    position: absolute; inset: 0; display: grid; place-items: center;
+  }
+  .todo .txt { flex: 1; padding-top: 2px; word-break: break-word; }
+  .todo.done .txt { color: var(--dim); text-decoration: line-through; }
+  .todo .via { display: block; color: var(--dim); font-size: 11px; margin-top: 3px; }
+  .todo .del {
+    flex: none; background: none; border: 0; color: var(--dim);
+    font-size: 18px; padding: 4px 8px; cursor: pointer; margin: -2px -4px 0 0;
+  }
+  .todo .del:active { color: var(--danger); }
+
+  #donehead {
+    display: flex; align-items: center; gap: 8px; margin: 20px 2px 10px;
+    color: var(--dim); font-size: 14px; cursor: pointer; user-select: none;
+  }
+  #donehead .clear {
+    margin-left: auto; background: none; border: 1px solid var(--line);
+    color: var(--dim); border-radius: 10px; font: inherit; font-size: 13px;
+    padding: 4px 12px; cursor: pointer;
+  }
+  #donelist.hidden { display: none; }
+  #empty { color: var(--dim); text-align: center; padding: 40px 0 20px; }
+  #notoken { color: var(--danger); text-align: center; padding: 40px 14px; }
+
+  #toast {
+    position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom));
+    transform: translateX(-50%); background: #262e3d; color: var(--text);
+    border-radius: 12px; padding: 11px 18px; display: none; z-index: 10;
+    box-shadow: 0 6px 24px rgba(0,0,0,.5); font-size: 15px;
+    align-items: center; gap: 14px; max-width: 90vw;
+  }
+  #toast.show { display: flex; }
+  #toast button {
+    background: none; border: 0; color: var(--accent); font: inherit;
+    font-weight: 700; cursor: pointer; padding: 0;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>✅ todo</h1>
+    <span class="count" id="count"></span>
+    <span id="net"></span>
+  </header>
+  <div id="addrow">
+    <input id="addbox" type="text" placeholder="add a todo…" autocomplete="off" enterkeyhint="done">
+    <button id="addbtn" aria-label="add">+</button>
+  </div>
+  <div id="openlist"></div>
+  <div id="empty" style="display:none">nothing to do 🎉</div>
+  <div id="donehead" style="display:none">
+    <span id="donetitle">done</span>
+    <button class="clear" id="clearbtn">clear</button>
+  </div>
+  <div id="donelist"></div>
+  <div id="notoken" style="display:none">
+    no token — open this page once via its <b>?t=…</b> link
+  </div>
+</div>
+<div id="toast"><span id="toastmsg"></span><button id="undobtn">undo</button></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+
+// ---- token: ?t= once, then localStorage (so the installed PWA works) ----
+const qs = new URLSearchParams(location.search);
+if (qs.get("t")) localStorage.setItem("todo_t", qs.get("t"));
+const TOKEN = localStorage.getItem("todo_t") || "";
+
+let todos = [];        // server truth (with optimistic edits applied)
+let rev = -1;
+let lastDeleted = null, toastTimer = null;
+
+function api(path, opts = {}) {
+  opts.headers = Object.assign({ "Authorization": "Bearer " + TOKEN }, opts.headers);
+  if (opts.body) opts.headers["Content-Type"] = "application/json";
+  return fetch(path, opts).then(r => {
+    if (r.status === 401) { $("notoken").style.display = "block"; throw new Error("401"); }
+    if (!r.ok) throw new Error("http " + r.status);
+    $("net").textContent = ""; $("net").className = "";
+    return r.json();
+  }).catch(e => { $("net").textContent = "offline"; $("net").className = "err"; throw e; });
+}
+
+function render() {
+  const open = todos.filter(t => !t.done);
+  const done = todos.filter(t => t.done);
+  $("count").textContent = open.length ? open.length + " open" : "";
+  $("empty").style.display = (open.length || done.length) ? "none" : "block";
+  $("donehead").style.display = done.length ? "flex" : "none";
+  $("donetitle").textContent = "done (" + done.length + ")";
+  fill($("openlist"), open);
+  fill($("donelist"), done);
+}
+
+function fill(el, list) {
+  el.textContent = "";
+  for (const t of list) {
+    const row = document.createElement("div");
+    row.className = "todo" + (t.done ? " done" : "");
+    const tick = document.createElement("button");
+    tick.className = "tick"; tick.setAttribute("aria-label", t.done ? "reopen" : "complete");
+    tick.onclick = () => toggle(t);
+    const txt = document.createElement("div");
+    txt.className = "txt"; txt.textContent = t.text;
+    if (t.via && t.via !== "web") {
+      const via = document.createElement("span");
+      via.className = "via"; via.textContent = "via " + t.via;
+      txt.appendChild(via);
+    }
+    const del = document.createElement("button");
+    del.className = "del"; del.textContent = "✕"; del.setAttribute("aria-label", "delete");
+    del.onclick = () => remove(t);
+    row.append(tick, txt, del);
+    el.appendChild(row);
+  }
+}
+
+function refresh() {
+  if (!TOKEN) { $("notoken").style.display = "block"; return; }
+  api("/api/todos").then(d => {
+    if (d.rev !== rev) { rev = d.rev; todos = d.todos; render(); }
+  }).catch(() => {});
+}
+
+function add() {
+  const text = $("addbox").value.trim();
+  if (!text) return;
+  $("addbox").value = "";
+  $("addbox").focus();
+  const fake = { id: "pending" + Math.random(), text, done: false, via: "web" };
+  todos.unshift(fake); render();
+  api("/api/todos", { method: "POST", body: JSON.stringify({ text, via: "web" }) })
+    .then(t => { Object.assign(fake, t); })
+    .catch(() => { todos = todos.filter(x => x !== fake); render(); });
+}
+
+function toggle(t) {
+  t.done = !t.done; render();
+  api("/api/todos/" + t.id, { method: "POST", body: JSON.stringify({ done: t.done }) })
+    .catch(() => { t.done = !t.done; render(); });
+}
+
+function remove(t) {
+  todos = todos.filter(x => x !== t); render();
+  api("/api/todos/" + t.id, { method: "DELETE" })
+    .then(() => showUndo(t))
+    .catch(() => { todos.push(t); render(); });
+}
+
+function showUndo(t) {
+  lastDeleted = t;
+  $("toastmsg").textContent = "deleted “" + (t.text.length > 30 ? t.text.slice(0, 30) + "…" : t.text) + "”";
+  $("toast").classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => $("toast").classList.remove("show"), 6000);
+}
+
+$("undobtn").onclick = () => {
+  $("toast").classList.remove("show");
+  if (!lastDeleted) return;
+  const t = lastDeleted; lastDeleted = null;
+  api("/api/todos", { method: "POST", body: JSON.stringify({ text: t.text, via: t.via || "web" }) })
+    .then(() => refresh()).catch(() => {});
+};
+
+$("clearbtn").onclick = e => {
+  e.stopPropagation();
+  api("/api/clear_done", { method: "POST" }).then(() => refresh()).catch(() => {});
+};
+$("donehead").onclick = () => $("donelist").classList.toggle("hidden");
+$("addbtn").onclick = add;
+$("addbox").addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+setInterval(() => { if (!document.hidden) refresh(); }, 4000);
+refresh();
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+</script>
+</body>
+</html>
