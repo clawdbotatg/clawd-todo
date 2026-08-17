@@ -178,9 +178,17 @@ const ub64 = s => Uint8Array.from(
 function showLock() {
   $("lock").style.display = "block";
   document.getElementById("addrow").style.display = "none";
+  $("lockbtn").style.display = "";
   if (ENROLL) {
     $("lockmsg").textContent = "set up Face ID for this device";
     $("lockbtn").textContent = "➕ enroll Face ID";
+    if (!window.PublicKeyCredential) {
+      // Telegram/in-app browsers have no WebAuthn — a dead button with a
+      // cryptic error reads as "broken", so say the actual fix.
+      $("lockbtn").style.display = "none";
+      $("lockerr").textContent =
+        "this browser can't do Face ID — copy this link and open it in Safari";
+    }
   } else {
     $("lockmsg").textContent = "face scan to open (once a day)";
     $("lockbtn").textContent = "🔓 unlock";
@@ -240,7 +248,10 @@ $("lockbtn").onclick = async () => {
     await (ENROLL ? doEnroll() : doLogin());
     hideLock(); rev = -1; refresh();
   } catch (e) {
-    $("lockerr").textContent = e.message || "failed";
+    $("lockerr").textContent =
+      (e.name === "NotSupportedError" || e instanceof TypeError)
+        ? "this browser can't do Face ID — open this link in Safari"
+        : (e.message || "failed");
   }
 };
 
@@ -336,7 +347,10 @@ $("addbox").addEventListener("keydown", e => { if (e.key === "Enter") add(); });
 
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 setInterval(() => { if (!document.hidden) refresh(); }, 4000);
-refresh();
+// An enroll link must ALWAYS land on the enroll screen. The lock otherwise
+// only appears on a 401, so a browser that still holds a working token or
+// session cookie would swallow the ?enroll code and open the app instead.
+if (ENROLL) showLock(); else refresh();
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 </script>
