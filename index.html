@@ -74,6 +74,50 @@
     font-size: 18px; padding: 4px 8px; cursor: pointer; margin: -2px -4px 0 0;
   }
   .todo .del:active { color: var(--danger); }
+  .todo .grab {
+    flex: none; background: none; border: 0; color: var(--dim);
+    font-size: 15px; padding: 4px 0; margin: 0 -6px 0 -4px;
+    cursor: grab; touch-action: none;
+    -webkit-user-select: none; user-select: none;
+  }
+  .todo.drag {
+    position: relative; z-index: 6; opacity: .93; transition: none;
+    box-shadow: 0 8px 24px rgba(0,0,0,.55); border-color: var(--accent);
+  }
+  body.dragging { -webkit-user-select: none; user-select: none; }
+
+  #foot { text-align: center; padding: 26px 0 10px; }
+  #foot button {
+    background: none; border: 0; color: var(--dim); font: inherit;
+    font-size: 13px; cursor: pointer; text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  #skillview {
+    position: fixed; inset: 0; z-index: 20; display: none;
+    background: rgba(5,8,12,.72);
+    padding: calc(16px + env(safe-area-inset-top)) 12px calc(16px + env(safe-area-inset-bottom));
+  }
+  #skillview.show { display: flex; }
+  #skillcard {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+    width: 100%; max-width: 640px; margin: 0 auto;
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  #skilltext {
+    flex: 1; overflow: auto; margin: 0; padding: 14px 16px;
+    font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap; word-break: break-word;
+    -webkit-user-select: text; user-select: text;
+  }
+  #skillbtns { display: flex; gap: 10px; padding: 12px 14px; border-top: 1px solid var(--line); }
+  #skillcopy {
+    flex: 1; background: var(--accent); color: #05240f; border: 0;
+    border-radius: 12px; font: inherit; font-weight: 700; padding: 12px; cursor: pointer;
+  }
+  #skillclose {
+    background: none; border: 1px solid var(--line); color: var(--dim);
+    border-radius: 12px; font: inherit; padding: 12px 18px; cursor: pointer;
+  }
 
   #donehead {
     display: flex; align-items: center; gap: 8px; margin: 20px 2px 10px;
@@ -128,11 +172,21 @@
     <button class="clear" id="clearbtn">clear</button>
   </div>
   <div id="donelist"></div>
+  <div id="foot"><button id="skilllink">🤖 agent instructions</button></div>
   <div id="lock">
     <div style="font-size:44px">🔒</div>
     <div id="lockmsg">locked</div>
     <button class="bigbtn" id="lockbtn">unlock</button>
     <div id="lockerr"></div>
+  </div>
+</div>
+<div id="skillview">
+  <div id="skillcard">
+    <pre id="skilltext">loading…</pre>
+    <div id="skillbtns">
+      <button id="skillcopy">copy</button>
+      <button id="skillclose">close</button>
+    </div>
   </div>
 </div>
 <div id="toast"><span id="toastmsg"></span><button id="undobtn">undo</button></div>
@@ -178,6 +232,7 @@ const ub64 = s => Uint8Array.from(
 function showLock() {
   $("lock").style.display = "block";
   document.getElementById("addrow").style.display = "none";
+  $("foot").style.display = "none";
   $("lockbtn").style.display = "";
   if (ENROLL) {
     $("lockmsg").textContent = "set up Face ID for this device";
@@ -197,6 +252,7 @@ function showLock() {
 function hideLock() {
   $("lock").style.display = "none";
   document.getElementById("addrow").style.display = "flex";
+  $("foot").style.display = "";
   $("lockerr").textContent = "";
 }
 
@@ -271,6 +327,14 @@ function fill(el, list) {
   for (const t of list) {
     const row = document.createElement("div");
     row.className = "todo" + (t.done ? " done" : "");
+    row.dataset.id = t.id;
+    if (!t.done) {
+      const grab = document.createElement("button");
+      grab.className = "grab"; grab.textContent = "⠿";
+      grab.setAttribute("aria-label", "drag to reorder");
+      grab.addEventListener("pointerdown", e => startDrag(e, row));
+      row.appendChild(grab);
+    }
     const tick = document.createElement("button");
     tick.className = "tick"; tick.setAttribute("aria-label", t.done ? "reopen" : "complete");
     tick.onclick = () => toggle(t);
@@ -290,10 +354,81 @@ function fill(el, list) {
 }
 
 function refresh() {
+  if (dragging) return; // a poll repaint mid-drag would yank the row away
   api("/api/todos").then(d => {
     hideLock();
+    if (dragging) return;
     if (d.rev !== rev) { rev = d.rev; todos = d.todos; render(); }
   }).catch(() => {});
+}
+
+// ---- drag to reorder (open list only) ----------------------------------
+let dragging = false;
+
+function startDrag(e, row) {
+  const list = $("openlist");
+  if (e.button || row.parentNode !== list || dragging) return;
+  e.preventDefault();
+  dragging = true;
+  document.body.classList.add("dragging");
+  row.classList.add("drag");
+  const handle = e.currentTarget;
+  try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+  const GAP = 8; // .todo margin-bottom
+  let y0 = e.clientY, dy = 0;
+  const place = () => { row.style.transform = "translateY(" + dy + "px)"; };
+
+  const move = ev => {
+    dy += ev.clientY - y0; y0 = ev.clientY; place();
+    // swap with a neighbour once our centre crosses its midpoint; the DOM
+    // move shifts our static position, so fold the neighbour's height back
+    // into dy to keep the row visually pinned to the finger
+    for (;;) {
+      const r = row.getBoundingClientRect(), mid = r.top + r.height / 2;
+      const prev = row.previousElementSibling, next = row.nextElementSibling;
+      if (prev) {
+        const pr = prev.getBoundingClientRect();
+        if (mid < pr.top + pr.height / 2) {
+          list.insertBefore(row, prev); dy += pr.height + GAP; place(); continue;
+        }
+      }
+      if (next) {
+        const nr = next.getBoundingClientRect();
+        if (mid > nr.top + nr.height / 2) {
+          list.insertBefore(next, row); dy -= nr.height + GAP; place(); continue;
+        }
+      }
+      break;
+    }
+  };
+
+  const finish = commit => {
+    handle.removeEventListener("pointermove", move);
+    handle.removeEventListener("pointerup", up);
+    handle.removeEventListener("pointercancel", cancel);
+    row.classList.remove("drag");
+    row.style.transform = "";
+    document.body.classList.remove("dragging");
+    dragging = false;
+    if (commit) commitOrder(); else render();
+  };
+  const up = () => finish(true);
+  const cancel = () => finish(false);
+  handle.addEventListener("pointermove", move);
+  handle.addEventListener("pointerup", up);
+  handle.addEventListener("pointercancel", cancel);
+}
+
+function commitOrder() {
+  const ids = Array.from($("openlist").children).map(r => r.dataset.id);
+  const pos = new Map(ids.map((id, i) => [id, i]));
+  const open = todos.filter(t => !t.done)
+    .sort((a, b) => (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
+  todos = open.concat(todos.filter(t => t.done));
+  render();
+  api("/api/reorder", { method: "POST", body: JSON.stringify({ ids }) })
+    .then(d => { rev = d.rev; })
+    .catch(() => {});
 }
 
 function add() {
@@ -342,6 +477,37 @@ $("clearbtn").onclick = e => {
   api("/api/clear_done", { method: "POST" }).then(() => refresh()).catch(() => {});
 };
 $("donehead").onclick = () => $("donelist").classList.toggle("hidden");
+
+// ---- 🤖 agent instructions (generated server-side, embeds the token) ----
+$("skilllink").onclick = async () => {
+  $("skillview").classList.add("show");
+  $("skilltext").textContent = "loading…";
+  try {
+    const r = await fetch("/skill.md",
+      { headers: TOKEN ? { Authorization: "Bearer " + TOKEN } : {} });
+    if (r.status === 401) { $("skillview").classList.remove("show"); showLock(); return; }
+    $("skilltext").textContent = await r.text();
+  } catch (e) {
+    $("skilltext").textContent = "failed to load: " + (e.message || e);
+  }
+};
+$("skillclose").onclick = () => $("skillview").classList.remove("show");
+$("skillview").onclick = e => {
+  if (e.target === $("skillview")) $("skillview").classList.remove("show");
+};
+$("skillcopy").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText($("skilltext").textContent);
+    $("skillcopy").textContent = "copied ✓";
+  } catch (_) {
+    // clipboard can be denied — select the text so a manual copy is one tap
+    const sel = getSelection(), range = document.createRange();
+    range.selectNodeContents($("skilltext"));
+    sel.removeAllRanges(); sel.addRange(range);
+    $("skillcopy").textContent = "denied — text selected, copy by hand";
+  }
+  setTimeout(() => { $("skillcopy").textContent = "copy"; }, 1800);
+};
 $("addbtn").onclick = add;
 $("addbox").addEventListener("keydown", e => { if (e.key === "Enter") add(); });
 

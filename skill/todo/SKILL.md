@@ -34,7 +34,12 @@ machine, the token is in the credential store under "clawd-todo".
   the text. Confirm with the one-line output.
 - **Checking off**: `todo done` with a distinctive word from the item is
   enough; if the CLI says ambiguous, list and use the id.
-- **Reading**: `todo` prints open items newest-first. When asked "what's
-  next", show the list and, if you have context, suggest which one fits now.
+- **Reading**: `todo` prints open items in Austin's priority order, top item
+  first (he drag-orders them in the app — don't reorder unless he asks; the
+  API has POST /api/reorder if he does). When asked "what's next", show the
+  list and, if you have context, suggest which one fits now.
+- An agent on a machine WITHOUT this skill/CLI can be handed the pasteable
+  instructions from `GET /skill.md` (authed) — same text the app's
+  "🤖 agent instructions" footer shows.
 - The list is Austin's, not yours: never clear or delete items you didn't
   just add unless he asks.

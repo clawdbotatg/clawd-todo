@@ -5,11 +5,13 @@ Pure Python stdlib, one JSON file of state, one bearer token.
 Serves the UI (index.html/sw.js/manifest/icons, read from disk per request,
 so UI edits need no restart) and a small REST API:
 
-  GET    /api/todos               -> {"rev": N, "todos": [...]}
+  GET    /api/todos               -> {"rev": N, "todos": [...]}  (list order = priority)
   POST   /api/todos               {"text": "...", "via": "cli"}   -> todo
   POST   /api/todos/<id>          {"done": true|false, "text": "..."} -> todo
+  POST   /api/reorder             {"ids": [...]} new relative order  -> {"rev": N}
   DELETE /api/todos/<id>          -> {"ok": true}
   POST   /api/clear_done          -> {"removed": N}
+  GET    /skill.md                -> pasteable agent instructions (embeds the token)
 
 Auth, two lanes (same stance as the clawd-harness fleet UI):
   - machines: `Authorization: Bearer <token>` or `?t=<token>` — the token
@@ -170,6 +172,53 @@ def _verify_sig(pk_entry, authdata: bytes, cdj_raw: bytes, sig: bytes) -> bool:
         return False
 
 
+# Pasteable instructions for ANY ai agent (no CLI dependency) — served at
+# /skill.md behind auth, since it embeds the bearer token. __TOKEN__ and
+# __ORIGIN__ are substituted per request.
+SKILL_MD = """\
+# Austin's todo list — agent access
+
+You can read and edit Austin's personal todo list (one shared list, used from
+his phone and by agents on many machines) over a small REST API.
+
+Base URL: __ORIGIN__
+Every call needs this header:
+
+    Authorization: Bearer __TOKEN__
+
+## Endpoints
+
+- `GET /api/todos` -> `{"rev": N, "todos": [{"id", "text", "done", "created",
+  "done_at", "via"}, ...]}` — list order is Austin's priority order, top first.
+- `POST /api/todos` with `{"text": "buy milk", "via": "<your agent name>"}`
+  -> the new todo (lands on top).
+- `POST /api/todos/<id>` with `{"done": true}` to check off, `{"done": false}`
+  to reopen, `{"text": "..."}` to edit.
+- `DELETE /api/todos/<id>` — delete.
+- `POST /api/clear_done` — purge finished items.
+- `POST /api/reorder` with `{"ids": ["<id>", ...]}` — new relative order.
+
+Examples:
+
+    curl -s -H "Authorization: Bearer __TOKEN__" __ORIGIN__/api/todos
+
+    curl -s -X POST -H "Authorization: Bearer __TOKEN__" \\
+         -H "Content-Type: application/json" \\
+         -d '{"text": "test scrollback on phone", "via": "my-agent"}' \\
+         __ORIGIN__/api/todos
+
+## How to behave
+
+- Keep items short and imperative ("test scrollback on phone"), one item per
+  task; include the project name when it isn't obvious. Set "via" to your name.
+- To check something off, find its id with GET /api/todos first.
+- The order is Austin's priority order — don't reorder unless he asks.
+- The list is Austin's, not yours: never clear or delete items you didn't
+  just add unless he asks.
+- Treat the token as a secret: don't echo it into logs, commits, or chat.
+"""
+
+
 def _load_state():
     try:
         st = json.loads(DATA.read_text())
@@ -269,6 +318,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(401, {"error": "bad token"})
             with LOCK:
                 return self._send(200, {"rev": STATE["rev"], "todos": STATE["todos"]})
+        if path == "/skill.md":
+            if not self._authed():
+                return self._send(401, {"error": "unauthorized"})
+            md = SKILL_MD.replace("__ORIGIN__", ORIGIN).replace("__TOKEN__", TOKEN)
+            return self._send(200, md.encode(), "text/markdown; charset=utf-8")
         if path == "/healthz":
             return self._send(200, {"ok": True})
         return self._send(404, {"error": "not found"})
@@ -300,6 +354,25 @@ class Handler(BaseHTTPRequestHandler):
                 STATE["rev"] += 1
                 _save_state()
             return self._send(200, todo)
+
+        if path == "/api/reorder":
+            ids = self._body().get("ids")
+            if (not isinstance(ids, list) or len(ids) > 10000
+                    or not all(isinstance(i, str) for i in ids)):
+                return self._send(400, {"error": "ids must be a list of strings"})
+            order = {tid: i for i, tid in enumerate(ids)}
+            with LOCK:
+                # Reorder the mentioned todos into the slots they already
+                # occupy; anything unmentioned (races with a concurrent add,
+                # done items the phone doesn't send) keeps its position.
+                mentioned = sorted((t for t in STATE["todos"] if t["id"] in order),
+                                   key=lambda t: order[t["id"]])
+                it = iter(mentioned)
+                STATE["todos"] = [next(it) if t["id"] in order else t
+                                  for t in STATE["todos"]]
+                STATE["rev"] += 1
+                _save_state()
+                return self._send(200, {"rev": STATE["rev"]})
 
         if path == "/api/clear_done":
             with LOCK:
