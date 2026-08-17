@@ -75,8 +75,12 @@
   }
   .todo .del:active { color: var(--danger); }
   .todo .grab {
+    /* full-height strip, ~44px wide (Apple touch-target size) — the
+       negative margins swallow the row's padding so the hit area runs
+       edge-to-edge vertically */
     flex: none; background: none; border: 0; color: var(--dim);
-    font-size: 15px; padding: 4px 0; margin: 0 -6px 0 -4px;
+    font-size: 17px; padding: 0 12px 0 14px; margin: -13px -8px -13px -14px;
+    align-self: stretch; display: grid; place-items: center;
     cursor: grab; touch-action: none;
     -webkit-user-select: none; user-select: none;
   }
