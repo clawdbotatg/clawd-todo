@@ -25,8 +25,18 @@
     overscroll-behavior-y: contain;
   }
   #app { max-width: 640px; margin: 0 auto; padding: 10px 14px 90px; }
-  header { display: flex; align-items: baseline; gap: 10px; padding: 8px 2px 12px; }
-  header h1 { font-size: 22px; margin: 0; letter-spacing: .5px; }
+  header { display: flex; align-items: center; gap: 10px; padding: 8px 2px 12px; }
+  #tabs { display: flex; gap: 6px; }
+  #tabs button {
+    background: none; border: 1px solid transparent; border-radius: 12px;
+    font: inherit; font-size: 22px; line-height: 1; padding: 8px 12px;
+    cursor: pointer; opacity: .45; filter: grayscale(.6);
+  }
+  #tabs button.active {
+    background: var(--panel); border-color: var(--line);
+    opacity: 1; filter: none;
+  }
+  #tabs button:active { transform: scale(.92); }
   header .count { color: var(--dim); font-size: 14px; }
   #net { margin-left: auto; font-size: 12px; color: var(--dim); }
   #net.err { color: var(--danger); }
@@ -161,7 +171,7 @@
 <body>
 <div id="app">
   <header>
-    <h1>✅ todo</h1>
+    <div id="tabs"></div>
     <span class="count" id="count"></span>
     <span id="net"></span>
   </header>
@@ -210,6 +220,36 @@ const ENROLL = qs.get("enroll") || "";
 let todos = [];        // server truth (with optimistic edits applied)
 let rev = -1;
 let lastDeleted = null, toastTimer = null;
+
+// ---- hardcoded lists: add a new one by adding a row here ----------------
+// (the server is list-agnostic; a todo with no "list" field is "todo")
+const LISTS = [
+  { id: "todo", emoji: "✅", label: "todo" },
+  { id: "work", emoji: "💼", label: "work" },
+];
+let curList = localStorage.getItem("todo_list") || "todo";
+if (!LISTS.some(l => l.id === curList)) curList = "todo";
+const listOf = t => t.list || "todo";
+
+for (const l of LISTS) {
+  const b = document.createElement("button");
+  b.textContent = l.emoji;
+  b.title = l.label;
+  b.setAttribute("aria-label", l.label + " list");
+  b.onclick = () => {
+    if (curList === l.id) return;
+    curList = l.id;
+    localStorage.setItem("todo_list", curList);
+    renderTabs(); render();
+  };
+  b.dataset.list = l.id;
+  $("tabs").appendChild(b);
+}
+function renderTabs() {
+  for (const b of $("tabs").children)
+    b.classList.toggle("active", b.dataset.list === curList);
+}
+renderTabs();
 
 function api(path, opts = {}) {
   opts.headers = Object.assign({}, opts.headers);
@@ -316,8 +356,9 @@ $("lockbtn").onclick = async () => {
 };
 
 function render() {
-  const open = todos.filter(t => !t.done);
-  const done = todos.filter(t => t.done);
+  const mine = todos.filter(t => listOf(t) === curList);
+  const open = mine.filter(t => !t.done);
+  const done = mine.filter(t => t.done);
   $("count").textContent = open.length ? open.length + " open" : "";
   $("empty").style.display = (open.length || done.length) ? "none" : "block";
   $("donehead").style.display = done.length ? "flex" : "none";
@@ -426,9 +467,12 @@ function startDrag(e, row) {
 function commitOrder() {
   const ids = Array.from($("openlist").children).map(r => r.dataset.id);
   const pos = new Map(ids.map((id, i) => [id, i]));
-  const open = todos.filter(t => !t.done)
-    .sort((a, b) => (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
-  todos = open.concat(todos.filter(t => t.done));
+  // same slot-based reorder as the server: only the dragged list's rows are
+  // mentioned, so other lists' todos keep their positions
+  const mentioned = todos.filter(t => pos.has(t.id))
+    .sort((a, b) => pos.get(a.id) - pos.get(b.id));
+  let i = 0;
+  todos = todos.map(t => pos.has(t.id) ? mentioned[i++] : t);
   render();
   api("/api/reorder", { method: "POST", body: JSON.stringify({ ids }) })
     .then(d => { rev = d.rev; })
@@ -440,9 +484,9 @@ function add() {
   if (!text) return;
   $("addbox").value = "";
   $("addbox").focus();
-  const fake = { id: "pending" + Math.random(), text, done: false, via: "web" };
+  const fake = { id: "pending" + Math.random(), text, done: false, via: "web", list: curList };
   todos.unshift(fake); render();
-  api("/api/todos", { method: "POST", body: JSON.stringify({ text, via: "web" }) })
+  api("/api/todos", { method: "POST", body: JSON.stringify({ text, via: "web", list: curList }) })
     .then(t => { Object.assign(fake, t); })
     .catch(() => { todos = todos.filter(x => x !== fake); render(); });
 }
@@ -472,13 +516,15 @@ $("undobtn").onclick = () => {
   $("toast").classList.remove("show");
   if (!lastDeleted) return;
   const t = lastDeleted; lastDeleted = null;
-  api("/api/todos", { method: "POST", body: JSON.stringify({ text: t.text, via: t.via || "web" }) })
+  api("/api/todos", { method: "POST",
+      body: JSON.stringify({ text: t.text, via: t.via || "web", list: listOf(t) }) })
     .then(() => refresh()).catch(() => {});
 };
 
 $("clearbtn").onclick = e => {
   e.stopPropagation();
-  api("/api/clear_done", { method: "POST" }).then(() => refresh()).catch(() => {});
+  api("/api/clear_done", { method: "POST", body: JSON.stringify({ list: curList }) })
+    .then(() => refresh()).catch(() => {});
 };
 $("donehead").onclick = () => $("donelist").classList.toggle("hidden");
 

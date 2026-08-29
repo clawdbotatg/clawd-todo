@@ -6,11 +6,16 @@ Serves the UI (index.html/sw.js/manifest/icons, read from disk per request,
 so UI edits need no restart) and a small REST API:
 
   GET    /api/todos               -> {"rev": N, "todos": [...]}  (list order = priority)
-  POST   /api/todos               {"text": "...", "via": "cli"}   -> todo
-  POST   /api/todos/<id>          {"done": true|false, "text": "..."} -> todo
+  POST   /api/todos               {"text": "...", "via": "cli", "list": "todo"} -> todo
+  POST   /api/todos/<id>          {"done": true|false, "text": "...", "list": "..."} -> todo
   POST   /api/reorder             {"ids": [...]} new relative order  -> {"rev": N}
   DELETE /api/todos/<id>          -> {"ok": true}
-  POST   /api/clear_done          -> {"removed": N}
+  POST   /api/clear_done          {"list": "todo"} (optional scope)  -> {"removed": N}
+
+Todos live on named lists ("list" field, default "todo"). The server is
+list-agnostic — it just stores the string; the UI hardcodes which lists
+exist as emoji tabs (✅ todo, 💼 work) and more are added by editing that
+one array in index.html.
   GET    /skill.md                -> pasteable agent instructions (embeds the token)
 
 Auth, two lanes (same stance as the clawd-harness fleet UI):
@@ -189,13 +194,18 @@ Every call needs this header:
 ## Endpoints
 
 - `GET /api/todos` -> `{"rev": N, "todos": [{"id", "text", "done", "created",
-  "done_at", "via"}, ...]}` — list order is Austin's priority order, top first.
+  "done_at", "via", "list"}, ...]}` — list order is Austin's priority order,
+  top first. There are separate lists: `"todo"` (personal, the default —
+  a missing "list" field means "todo") and `"work"`.
 - `POST /api/todos` with `{"text": "buy milk", "via": "<your agent name>"}`
-  -> the new todo (lands on top).
+  -> the new todo (lands on top). Add `"list": "work"` for the work list;
+  omit for the personal list. Use "work" only when Austin says it's a work
+  item — default to personal when unsure.
 - `POST /api/todos/<id>` with `{"done": true}` to check off, `{"done": false}`
-  to reopen, `{"text": "..."}` to edit.
+  to reopen, `{"text": "..."}` to edit, `{"list": "work"}` to move lists.
 - `DELETE /api/todos/<id>` — delete.
-- `POST /api/clear_done` — purge finished items.
+- `POST /api/clear_done` with `{"list": "todo"}` — purge that list's finished
+  items (omit "list" to purge every list).
 - `POST /api/reorder` with `{"ids": ["<id>", ...]}` — new relative order.
 
 Examples:
@@ -348,6 +358,7 @@ class Handler(BaseHTTPRequestHandler):
                 "created": _now(),
                 "done_at": None,
                 "via": str(body.get("via", "web"))[:40],
+                "list": str(body.get("list", "todo")).strip()[:20] or "todo",
             }
             with LOCK:
                 STATE["todos"].insert(0, todo)
@@ -375,9 +386,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"rev": STATE["rev"]})
 
         if path == "/api/clear_done":
+            lst = str(self._body().get("list", "")).strip()
             with LOCK:
                 before = len(STATE["todos"])
-                STATE["todos"] = [t for t in STATE["todos"] if not t["done"]]
+                STATE["todos"] = [
+                    t for t in STATE["todos"]
+                    if not (t["done"] and (not lst or t.get("list", "todo") == lst))]
                 removed = before - len(STATE["todos"])
                 if removed:
                     STATE["rev"] += 1
@@ -396,6 +410,8 @@ class Handler(BaseHTTPRequestHandler):
                     todo["done_at"] = _now() if todo["done"] else None
                 if "text" in body and str(body["text"]).strip():
                     todo["text"] = str(body["text"]).strip()[:2000]
+                if "list" in body and str(body["list"]).strip():
+                    todo["list"] = str(body["list"]).strip()[:20]
                 STATE["rev"] += 1
                 _save_state()
                 return self._send(200, todo)
