@@ -14,8 +14,8 @@ so UI edits need no restart) and a small REST API:
 
 Todos live on named lists ("list" field, default "todo"). The server is
 list-agnostic — it just stores the string; the UI hardcodes which lists
-exist as emoji tabs (✅ todo, 💼 work) and more are added by editing that
-one array in index.html.
+exist as emoji tabs (✅ todo, 💼 work, 🛠️ builds) and more are added by
+editing that one array in index.html.
   GET    /skill.md                -> pasteable agent instructions (embeds the token)
 
 Auth, two lanes (same stance as the clawd-harness fleet UI):
@@ -196,11 +196,13 @@ Every call needs this header:
 - `GET /api/todos` -> `{"rev": N, "todos": [{"id", "text", "done", "created",
   "done_at", "via", "list"}, ...]}` — list order is Austin's priority order,
   top first. There are separate lists: `"todo"` (personal, the default —
-  a missing "list" field means "todo") and `"work"`.
+  a missing "list" field means "todo"), `"work"`, and `"builds"` (things to
+  build).
 - `POST /api/todos` with `{"text": "buy milk", "via": "<your agent name>"}`
-  -> the new todo (lands on top). Add `"list": "work"` for the work list;
-  omit for the personal list. Use "work" only when Austin says it's a work
-  item — default to personal when unsure.
+  -> the new todo (lands on top). Add `"list": "work"` or `"list": "builds"`
+  to target those lists; omit for the personal list. Only target another
+  list when Austin says it's a work item / a build — default to personal
+  when unsure.
 - `POST /api/todos/<id>` with `{"done": true}` to check off, `{"done": false}`
   to reopen, `{"text": "..."}` to edit, `{"list": "work"}` to move lists.
 - `DELETE /api/todos/<id>` — delete.

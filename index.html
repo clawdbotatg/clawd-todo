@@ -226,6 +226,7 @@ let lastDeleted = null, toastTimer = null;
 const LISTS = [
   { id: "todo", emoji: "✅", label: "todo" },
   { id: "work", emoji: "💼", label: "work" },
+  { id: "builds", emoji: "🛠️", label: "builds" },
 ];
 let curList = localStorage.getItem("todo_list") || "todo";
 if (!LISTS.some(l => l.id === curList)) curList = "todo";
