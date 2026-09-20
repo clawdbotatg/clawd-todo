@@ -22,7 +22,7 @@ Auth, two lanes (same stance as the clawd-harness fleet UI):
   - machines: `Authorization: Bearer <token>` or `?t=<token>` — the token
     never goes to a phone.
   - humans: a passkey (WebAuthn / Face ID, rpId = TODO_RPID) traded for a
-    24h HttpOnly session cookie. Enrollment of a new device needs a
+    7-day HttpOnly session cookie. Enrollment of a new device needs a
     one-time code, armed via POST /auth/arm_enroll (bearer-token only).
 
 Endpoints: POST /auth/challenge, /auth/register, /auth/login, /auth/logout,
@@ -31,7 +31,7 @@ Endpoints: POST /auth/challenge, /auth/register, /auth/login, /auth/logout,
 Env: TODO_PORT (8794), TODO_HOST (127.0.0.1), TODO_TOKEN or
 TODO_TOKEN_FILE (.clawd-todo.token, auto-generated), TODO_DATA (todos.json),
 TODO_RPID (todo.atg.link), TODO_ORIGIN (https://todo.atg.link),
-TODO_SESSION_TTL (86400).
+TODO_SESSION_TTL (604800, 7 days).
 """
 import base64
 import hashlib
@@ -87,7 +87,7 @@ LOCK = threading.Lock()
 # ---- passkey auth ------------------------------------------------------
 RPID = os.environ.get("TODO_RPID", "todo.atg.link")
 ORIGIN = os.environ.get("TODO_ORIGIN", "https://todo.atg.link")
-SESSION_TTL = int(os.environ.get("TODO_SESSION_TTL", "86400"))
+SESSION_TTL = int(os.environ.get("TODO_SESSION_TTL", str(7 * 86400)))
 AUTH_FILE = Path(os.environ.get("TODO_AUTH", HERE / ".clawd-todo.auth.json"))
 ENROLL_TTL = 900
 CHAL_TTL = 300

@@ -210,7 +210,7 @@
 const $ = id => document.getElementById(id);
 
 // ---- token: ?t= once, then localStorage (so the installed PWA works) ----
-// Auth: passkey (Face ID) -> 24h HttpOnly cookie. A bearer token in ?t= or
+// Auth: passkey (Face ID) -> 7-day HttpOnly cookie. A bearer token in ?t= or
 // localStorage still works for dev/testing, but phones never see one.
 const qs = new URLSearchParams(location.search);
 if (qs.get("t")) localStorage.setItem("todo_t", qs.get("t"));

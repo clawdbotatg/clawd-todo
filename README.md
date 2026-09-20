@@ -5,7 +5,7 @@ token-authed REST API, so every agent on every machine can read, add, and
 check off items.
 
 - **Phone**: passkey auth, like the clawd-harness fleet UI — enroll once via a
-  one-time link (`todo enroll`), then one Face ID scan per 24h (HttpOnly
+  one-time link (`todo enroll`), then one Face ID scan per week (HttpOnly
   SameSite=Strict session cookie). Tokens never go to a phone. Installable PWA
   (manifest + service worker, offline-readable shell): Share → Add to Home
   Screen.
