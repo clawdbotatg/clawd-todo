@@ -43,6 +43,14 @@ POST   /api/clear_done
 GET    /healthz              (no auth)
 ```
 
+🔥 **irons**: the 🔥 tab shows every clawd-harness iron's to-do list (one
+section per iron; tap a header to make it the add target, ↗ opens the iron on
+h.atg.link). Those lists are NOT stored here — `GET/POST /api/irons` pass
+through to the fleet relay's `/todo/bridge` on the same box, authed with the
+token the relay mints into `~/clawd-harness/fleet/.clawd-fleet.todo-bridge.token`
+(override: `TODO_IRONS_URL`, `TODO_IRONS_TOKEN[_FILE]`). Ticks/adds land on the
+iron live, `via: "todo"`.
+
 ## Deploy (the h.atg.link pattern)
 
 Lives on the `clawd-nerve-cord` AWS box (`ssh zkllmapi`) at

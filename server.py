@@ -18,6 +18,13 @@ exist as emoji tabs (✅ todo, 💼 work, 🛠️ builds) and more are added by
 editing that one array in index.html.
   GET    /skill.md                -> pasteable agent instructions (embeds the token)
 
+🔥 irons: every clawd-harness iron's to-do list, shown under its own tab.
+Those lists live on the fleet relay (same box), not here — these two routes
+pass through to its /todo/bridge with the relay-minted bridge token:
+  GET    /api/irons               -> {"irons": [{id, title, items:[...]}]}
+  POST   /api/irons               {"iron": id, "op": add|done|undone|rm|clear|order,
+                                   "text"?, "ref"?, "ids"?} -> {ok, msg, item}
+
 Auth, two lanes (same stance as the clawd-harness fleet UI):
   - machines: `Authorization: Bearer <token>` or `?t=<token>` — the token
     never goes to a phone.
@@ -31,7 +38,8 @@ Endpoints: POST /auth/challenge, /auth/register, /auth/login, /auth/logout,
 Env: TODO_PORT (8794), TODO_HOST (127.0.0.1), TODO_TOKEN or
 TODO_TOKEN_FILE (.clawd-todo.token, auto-generated), TODO_DATA (todos.json),
 TODO_RPID (todo.atg.link), TODO_ORIGIN (https://todo.atg.link),
-TODO_SESSION_TTL (604800, 7 days).
+TODO_SESSION_TTL (604800, 7 days), TODO_IRONS_URL (the relay's bridge),
+TODO_IRONS_TOKEN or TODO_IRONS_TOKEN_FILE (the relay mints it at boot).
 """
 import base64
 import hashlib
@@ -43,7 +51,9 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
+import urllib.error
+import urllib.request
 
 try:
     from cryptography.hazmat.primitives import hashes
@@ -83,6 +93,34 @@ def load_token() -> str:
 
 TOKEN = load_token()
 LOCK = threading.Lock()
+
+IRONS_URL = os.environ.get("TODO_IRONS_URL", "http://127.0.0.1:8788/todo/bridge")
+IRONS_TOKEN_FILE = Path(os.environ.get(
+    "TODO_IRONS_TOKEN_FILE",
+    Path.home() / "clawd-harness/fleet/.clawd-fleet.todo-bridge.token"))
+
+
+def _irons_call(body=None):
+    """One pass-through to the relay bridge -> (status, json). Token read per
+    call, so a relay that mints it after we boot just works."""
+    tok = os.environ.get("TODO_IRONS_TOKEN", "")
+    if not tok:
+        try:
+            tok = IRONS_TOKEN_FILE.read_text().strip()
+        except OSError:
+            return 503, {"error": "irons bridge not configured on this box"}
+    req = urllib.request.Request(
+        IRONS_URL + "?t=" + quote(tok),
+        data=None if body is None else json.dumps(body).encode(),
+        method="GET" if body is None else "POST",
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=4) as r:
+            return 200, json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        return 502, {"error": f"relay said {e.code}"}
+    except Exception as e:
+        return 502, {"error": f"relay unreachable ({type(e).__name__})"}
 
 # ---- passkey auth ------------------------------------------------------
 RPID = os.environ.get("TODO_RPID", "todo.atg.link")
@@ -330,6 +368,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(401, {"error": "bad token"})
             with LOCK:
                 return self._send(200, {"rev": STATE["rev"], "todos": STATE["todos"]})
+        if path == "/api/irons":
+            if not self._authed():
+                return self._send(401, {"error": "unauthorized"})
+            return self._send(*_irons_call())
         if path == "/skill.md":
             if not self._authed():
                 return self._send(401, {"error": "unauthorized"})
@@ -367,6 +409,13 @@ class Handler(BaseHTTPRequestHandler):
                 STATE["rev"] += 1
                 _save_state()
             return self._send(200, todo)
+
+        if path == "/api/irons":
+            b = self._body()
+            if not isinstance(b, dict) or not isinstance(b.get("iron"), str):
+                return self._send(400, {"error": "iron required"})
+            fwd = {k: b[k] for k in ("iron", "op", "text", "ref", "ids") if k in b}
+            return self._send(*_irons_call(fwd))
 
         if path == "/api/reorder":
             ids = self._body().get("ids")
