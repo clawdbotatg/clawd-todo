@@ -26,10 +26,17 @@
   }
   #app { max-width: 640px; margin: 0 auto; padding: 10px 14px 90px; }
   header { display: flex; align-items: center; gap: 10px; padding: 8px 2px 12px; }
-  #tabs { display: flex; gap: 6px; }
+  #tabs {
+    display: flex; gap: 4px; flex: 1; min-width: 0; align-items: center;
+    overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  #tabs::-webkit-scrollbar { display: none; }
+  #tabs.more { -webkit-mask-image: linear-gradient(to right, #000 82%, transparent);
+               mask-image: linear-gradient(to right, #000 82%, transparent); }
+  #tabs .sep { flex: none; width: 1px; height: 26px; background: var(--line); margin: 0 4px; }
   #tabs button {
     background: none; border: 1px solid transparent; border-radius: 12px;
-    font: inherit; font-size: 22px; line-height: 1; padding: 8px 12px;
+    font: inherit; font-size: 22px; line-height: 1; padding: 8px 10px; flex: none;
     cursor: pointer; opacity: .45; filter: grayscale(.6);
   }
   #tabs button.active {
@@ -143,21 +150,12 @@
     padding: 4px 12px; cursor: pointer;
   }
   #donelist.hidden { display: none; }
-  /* 🔥 irons tab: one section per clawd-harness iron */
-  .ironhead {
-    display: flex; align-items: center; gap: 8px; margin: 18px 2px 8px;
-    color: var(--dim); font-size: 14px; font-weight: 600; cursor: pointer;
-    -webkit-user-select: none; user-select: none;
+  /* iron tabs: which iron + a link to it in the harness */
+  #ironlink {
+    display: none; color: var(--dim); font-size: 14px; font-weight: 600;
+    text-decoration: none; margin: -4px 2px 10px;
   }
-  #openlist .ironhead:first-child { margin-top: 4px; }
-  .ironhead .n { font-weight: 400; }
-  .ironhead.target { color: var(--accent); }
-  .ironhead.target::before { content: "＋"; font-weight: 700; }
-  .ironhead.empty { opacity: .55; }
-  .ironhead a {
-    margin-left: auto; color: var(--dim); text-decoration: none;
-    font-size: 16px; padding: 2px 6px;
-  }
+  #ironlink.show { display: block; }
   #empty { color: var(--dim); text-align: center; padding: 40px 0 20px; }
   #lock { text-align: center; padding: 60px 14px; display: none; }
   #lock .bigbtn {
@@ -190,6 +188,7 @@
     <span class="count" id="count"></span>
     <span id="net"></span>
   </header>
+  <a id="ironlink" target="_blank" rel="noopener"></a>
   <div id="addrow">
     <input id="addbox" type="text" placeholder="add a todo…" autocomplete="off" enterkeyhint="done">
     <button id="addbtn" aria-label="add">+</button>
@@ -242,33 +241,93 @@ const LISTS = [
   { id: "todo", emoji: "✅", label: "todo" },
   { id: "work", emoji: "💼", label: "work" },
   { id: "builds", emoji: "🛠️", label: "builds" },
-  // not stored here: every clawd-harness iron's to-do list, read/written
-  // through the server's /api/irons pass-through to the fleet relay
-  { id: "irons", emoji: "🔥", label: "irons" },
 ];
-const IRONS = "irons";
+// After those: one tab per clawd-harness iron (list id "iron:<id>"), built
+// from /api/irons — not stored here, the server passes through to the fleet
+// relay. Emoji by iron title; an iron not in this map gets a stable pick
+// from the pool, so a new iron shows up on its own. Add a row to pin one.
+const IRON_EMOJI = {
+  "todo": "📋", "scribe": "✍️", "picowallet": "👛", "clear-signing": "🔏",
+  "bambu": "🖨️", "cell": "🧬", "ethevals": "🧪", "devcon": "🎪",
+  "gizmo": "📱", "dvrable": "🎬", "harness": "🦾", "slop-computer": "📺",
+};
+const IRON_POOL = ["🔥", "🚀", "🧩", "🌵", "🐙", "⚡", "🎯", "🪐", "🦊", "🍄",
+  "🌊", "🧲", "🛰️", "🎲", "🪁", "🌋", "🐝", "🔮", "🧭", "🪴"];
+function ironEmoji(iron) {
+  const k = iron.title.trim().toLowerCase();
+  if (IRON_EMOJI[k]) return IRON_EMOJI[k];
+  let h = 0;
+  for (const c of iron.id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return IRON_POOL[h % IRON_POOL.length];
+}
+const IRON_PREFIX = "iron:";
+const isIronTab = () => curList.startsWith(IRON_PREFIX);
 let curList = localStorage.getItem("todo_list") || "todo";
-if (!LISTS.some(l => l.id === curList)) curList = "todo";
+if (!LISTS.some(l => l.id === curList) && !curList.startsWith(IRON_PREFIX)) curList = "todo";
 const listOf = t => t.list || "todo";
 
-for (const l of LISTS) {
+function tabButton(id, emoji, label) {
   const b = document.createElement("button");
-  b.textContent = l.emoji;
-  b.title = l.label;
-  b.setAttribute("aria-label", l.label + " list");
+  b.textContent = emoji;
+  b.title = label;
+  b.setAttribute("aria-label", label + " list");
   b.onclick = () => {
-    if (curList === l.id) return;
-    curList = l.id;
+    if (curList === id) return;
+    curList = id;
     localStorage.setItem("todo_list", curList);
-    renderTabs(); render();
-    if (curList === IRONS) refreshIrons();
+    render(); renderTabs();   // render first: the count's width moves the strip
   };
-  b.dataset.list = l.id;
-  $("tabs").appendChild(b);
+  b.dataset.list = id;
+  return b;
 }
+for (const l of LISTS) $("tabs").appendChild(tabButton(l.id, l.emoji, l.label));
+const tabSep = document.createElement("span");
+tabSep.className = "sep"; tabSep.style.display = "none";
+$("tabs").appendChild(tabSep);
+
+// iron tabs: reconcile by id (polls land every 4s; don't rebuild the strip)
+function syncIronTabs() {
+  const want = (irons || []).map(i => IRON_PREFIX + i.id);
+  const have = new Map();
+  for (const b of [...$("tabs").children])
+    if ((b.dataset.list || "").startsWith(IRON_PREFIX)) {
+      if (want.includes(b.dataset.list)) have.set(b.dataset.list, b); else b.remove();
+    }
+  let prev = tabSep;
+  for (const iron of irons || []) {
+    const id = IRON_PREFIX + iron.id;
+    const b = have.get(id) || tabButton(id, ironEmoji(iron), iron.title);
+    b.textContent = ironEmoji(iron); b.title = iron.title;
+    // move only when out of place: moving every node resets the strip's scroll
+    if (prev.nextSibling !== b) prev.after(b);
+    prev = b;
+  }
+  tabSep.style.display = want.length ? "" : "none";
+  if (irons && isIronTab() && !want.includes(curList)) {
+    curList = "todo"; localStorage.setItem("todo_list", curList);
+  }
+  renderTabs();
+  showTab($("tabs").querySelector(".active"));
+}
+function showTab(b) {   // scroll the strip (only) so this tab is fully visible
+  if (!b) return;
+  const t = $("tabs"), tr = t.getBoundingClientRect(), br = b.getBoundingClientRect();
+  if (br.left < tr.left) t.scrollLeft -= tr.left - br.left + 8;
+  else if (br.right > tr.right) t.scrollLeft += br.right - tr.right + 24;
+}
+function fadeTabs() {
+  const t = $("tabs");
+  t.classList.toggle("more", t.scrollLeft + t.clientWidth < t.scrollWidth - 4);
+}
+$("tabs").addEventListener("scroll", fadeTabs, { passive: true });
 function renderTabs() {
-  for (const b of $("tabs").children)
-    b.classList.toggle("active", b.dataset.list === curList);
+  requestAnimationFrame(fadeTabs);
+  for (const b of $("tabs").children) {
+    const on = b.dataset.list === curList;
+    const was = b.classList.contains("active");
+    b.classList.toggle("active", on);
+    if (on && !was) showTab(b);
+  }
 }
 renderTabs();
 
@@ -376,21 +435,20 @@ $("lockbtn").onclick = async () => {
   }
 };
 
-// ---- 🔥 irons --------------------------------------------------------
+// ---- iron lists (live from the harness) ------------------------------
 let irons = null;      // [{id, title, items}] from the relay, null = not loaded
 let ironsErr = "";
 let ironsSig = "";
-let ironTarget = localStorage.getItem("todo_iron") || "";
 const ironOf = id => (irons || []).find(i => i.id === id);
+const curIron = () => isIronTab() ? ironOf(curList.slice(IRON_PREFIX.length)) : null;
 const HARNESS = "https://h.atg.link";
 
 function refreshIrons() {
-  if (curList !== IRONS) return;
   api("/api/irons").then(d => {
     hideLock();
     ironsErr = "";
     const sig = JSON.stringify(d.irons);
-    if (sig !== ironsSig) { ironsSig = sig; irons = d.irons || []; render(); }
+    if (sig !== ironsSig) { ironsSig = sig; irons = d.irons || []; render(); syncIronTabs(); }
   }).catch(e => {
     if (e.message === "401") return;
     if (irons === null) { ironsErr = "couldn't reach the harness irons"; render(); }
@@ -403,52 +461,28 @@ function ironOp(iron, body) {
     .then(d => { ironsSig = ""; refreshIrons(); return d; });
 }
 
-function setTarget(id) {
-  ironTarget = id;
-  localStorage.setItem("todo_iron", id);
-  render();
-}
-
-function renderIrons() {
-  const list = irons || [];
-  if (!ironOf(ironTarget) && list.length) ironTarget = list[0].id;
-  const tgt = ironOf(ironTarget);
-  $("addbox").placeholder = tgt ? "add to 🔥 " + tgt.title + "…" : "no irons yet";
-  const openN = list.reduce((n, i) => n + i.items.filter(t => !t.done).length, 0);
-  const done = [];
-  $("count").textContent = openN ? openN + " open" : "";
-  const el = $("openlist");
-  el.textContent = "";
-  for (const iron of list) {
-    const open = iron.items.filter(t => !t.done);
-    for (const t of iron.items) if (t.done) done.push(Object.assign({ iron: iron.id, ironTitle: iron.title }, t));
-    const h = document.createElement("div");
-    h.className = "ironhead" + (iron.id === ironTarget ? " target" : "") + (open.length ? "" : " empty");
-    const name = document.createElement("span");
-    name.textContent = "🔥 " + iron.title;
-    const n = document.createElement("span");
-    n.className = "n"; n.textContent = open.length ? "· " + open.length : "";
-    const go = document.createElement("a");
-    go.href = HARNESS + "/#/i/" + encodeURIComponent(iron.id);
-    go.textContent = "↗"; go.title = "open this iron in the harness";
-    go.onclick = e => e.stopPropagation();
-    h.append(name, n, go);
-    h.onclick = () => setTarget(iron.id);
-    el.appendChild(h);
-    const box = document.createElement("div");
-    fill(box, open.map(t => Object.assign({ iron: iron.id }, t)), IRON_ROW);
-    el.appendChild(box);
+function renderIron() {
+  const iron = curIron();
+  const items = iron ? iron.items.map(t => Object.assign({ iron: iron.id }, t)) : [];
+  const open = items.filter(t => !t.done), done = items.filter(t => t.done);
+  $("addbox").placeholder = iron ? "add to " + iron.title + "…" : "";
+  $("count").textContent = open.length ? open.length + " open" : "";
+  $("ironlink").classList.toggle("show", !!iron);
+  if (iron) {
+    $("ironlink").textContent = ironEmoji(iron) + " " + iron.title + " ↗";
+    $("ironlink").href = HARNESS + "/#/i/" + encodeURIComponent(iron.id);
   }
-  $("empty").textContent = ironsErr || (irons === null ? "loading…" : "no irons yet");
-  $("empty").style.display = (ironsErr || !list.length) ? "block" : "none";
+  $("empty").textContent = ironsErr || (iron ? "nothing to do 🎉" : "loading…");
+  $("empty").style.display = (open.length || done.length) ? "none" : "block";
   $("donehead").style.display = done.length ? "flex" : "none";
   $("donetitle").textContent = "done (" + done.length + ")";
+  fill($("openlist"), open, IRON_ROW);
   fill($("donelist"), done, IRON_ROW);
 }
 
 const IRON_ROW = {
   grab: false,
-  sub: t => t.ironTitle ? "🔥 " + t.ironTitle : (t.via && t.via !== "todo" && t.via !== "page" ? "via " + t.via : ""),
+  sub: t => t.via === "agent" ? "via agent" : "",
   toggle: t => {
     t.done = !t.done;
     const it = (ironOf(t.iron) || { items: [] }).items.find(x => x.id === t.id);
@@ -466,7 +500,8 @@ const IRON_ROW = {
 };
 
 function render() {
-  if (curList === IRONS) return renderIrons();
+  if (isIronTab()) return renderIron();
+  $("ironlink").classList.remove("show");
   $("addbox").placeholder = "add a todo…";
   $("empty").textContent = "nothing to do 🎉";
   const mine = todos.filter(t => listOf(t) === curList);
@@ -604,8 +639,8 @@ function commitOrder() {
 function add() {
   const text = $("addbox").value.trim();
   if (!text) return;
-  if (curList === IRONS) {
-    const iron = ironOf(ironTarget);
+  if (isIronTab()) {
+    const iron = curIron();
     if (!iron) return;
     $("addbox").value = "";
     $("addbox").focus();
@@ -656,9 +691,9 @@ $("undobtn").onclick = () => {
 
 $("clearbtn").onclick = e => {
   e.stopPropagation();
-  if (curList === IRONS) {
-    for (const i of irons || [])
-      if (i.items.some(t => t.done)) ironOp(i.id, { op: "clear" }).catch(() => {});
+  if (isIronTab()) {
+    const iron = curIron();
+    if (iron) ironOp(iron.id, { op: "clear" }).catch(() => {});
     return;
   }
   api("/api/clear_done", { method: "POST", body: JSON.stringify({ list: curList }) })
