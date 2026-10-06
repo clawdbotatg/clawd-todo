@@ -35,9 +35,10 @@ todo.atg.link.
 API (all need `Authorization: Bearer <token>`, `?t=`, or a session cookie):
 
 ```
-GET    /api/todos            -> {"rev": N, "todos": [{id,text,done,created,done_at,via}]}
+GET    /api/todos            -> {"rev": N, "todos": [{id,text,done,created,done_at,via,list,today}]}
 POST   /api/todos            {"text": "...", "via": "cli"}
 POST   /api/todos/<id>       {"done": true} and/or {"text": "..."}
+POST   /api/reorder          {"ids": [...], "today": [...]}  (☀️ today line)
 DELETE /api/todos/<id>
 POST   /api/clear_done
 GET    /healthz              (no auth)

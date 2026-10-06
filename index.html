@@ -106,6 +106,20 @@
     box-shadow: 0 8px 24px rgba(0,0,0,.55); border-color: var(--accent);
   }
   body.dragging { -webkit-user-select: none; user-select: none; }
+  /* ☀️ today line: open items above it are today's; height + margin-bottom
+     must keep the 8px gap the drag swap math assumes (GAP) */
+  .todayline {
+    display: flex; align-items: center; gap: 10px; height: 22px;
+    margin: 0 2px 8px; color: var(--accent); font-size: 12px;
+    font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    -webkit-user-select: none; user-select: none;
+  }
+  .todayline::before, .todayline::after {
+    content: ""; flex: 1; height: 2px; border-radius: 1px;
+    background: var(--accent); opacity: .55;
+  }
+  .todayline.empty { color: var(--dim); }
+  .todayline.empty::before, .todayline.empty::after { background: var(--dim); opacity: .35; }
 
   #foot { text-align: center; padding: 26px 0 10px; }
   #foot button {
@@ -446,6 +460,7 @@ const HARNESS = "https://h.atg.link";
 function refreshIrons() {
   api("/api/irons").then(d => {
     hideLock();
+    if (dragging) return;
     ironsErr = "";
     const sig = JSON.stringify(d.irons);
     if (sig !== ironsSig) { ironsSig = sig; irons = d.irons || []; render(); syncIronTabs(); }
@@ -466,7 +481,7 @@ function renderIron() {
   const items = iron ? iron.items.map(t => Object.assign({ iron: iron.id }, t)) : [];
   const open = items.filter(t => !t.done), done = items.filter(t => t.done);
   $("addbox").placeholder = iron ? "add to " + iron.title + "…" : "";
-  $("count").textContent = open.length ? open.length + " open" : "";
+  countText(open);
   $("ironlink").classList.toggle("show", !!iron);
   if (iron) {
     $("ironlink").textContent = ironEmoji(iron) + " " + iron.title + " ↗";
@@ -476,12 +491,12 @@ function renderIron() {
   $("empty").style.display = (open.length || done.length) ? "none" : "block";
   $("donehead").style.display = done.length ? "flex" : "none";
   $("donetitle").textContent = "done (" + done.length + ")";
-  fill($("openlist"), open, IRON_ROW);
+  fillOpen(open, IRON_ROW);
   fill($("donelist"), done, IRON_ROW);
 }
 
 const IRON_ROW = {
-  grab: false,
+  grab: true,
   sub: t => t.via === "agent" ? "via agent" : "",
   toggle: t => {
     t.done = !t.done;
@@ -507,12 +522,31 @@ function render() {
   const mine = todos.filter(t => listOf(t) === curList);
   const open = mine.filter(t => !t.done);
   const done = mine.filter(t => t.done);
-  $("count").textContent = open.length ? open.length + " open" : "";
+  countText(open);
   $("empty").style.display = (open.length || done.length) ? "none" : "block";
   $("donehead").style.display = done.length ? "flex" : "none";
   $("donetitle").textContent = "done (" + done.length + ")";
-  fill($("openlist"), open);
+  fillOpen(open);
   fill($("donelist"), done);
+}
+
+function countText(open) {
+  const n = open.filter(t => t.today).length;
+  $("count").textContent = !open.length ? "" :
+    (n ? n + " today · " : "") + open.length + " open";
+}
+
+// open items, today's first (keeping list order within each side), with the
+// ☀️ line between — new items land below it; drag one above to make it today's
+function fillOpen(open, ops) {
+  const today = open.filter(t => t.today), later = open.filter(t => !t.today);
+  const el = $("openlist");
+  fill(el, today.concat(later), ops);
+  if (!open.length) return;
+  const line = document.createElement("div");
+  line.className = "todayline" + (today.length ? "" : " empty");
+  line.textContent = today.length ? "☀️ today ↑" : "☀️ drag above this line for today";
+  el.insertBefore(line, el.children[today.length] || null);
 }
 
 const LIST_ROW = {
@@ -622,7 +656,24 @@ function startDrag(e, row) {
 }
 
 function commitOrder() {
-  const ids = Array.from($("openlist").children).map(r => r.dataset.id);
+  const rows = Array.from($("openlist").children);
+  const cut = rows.findIndex(r => r.classList.contains("todayline"));
+  const ids = rows.filter(r => r.dataset.id).map(r => r.dataset.id);
+  const today = rows.slice(0, Math.max(cut, 0)).map(r => r.dataset.id);
+  const tset = new Set(today);
+  if (isIronTab()) {
+    const iron = curIron();
+    if (!iron) return render();
+    for (const it of iron.items) if (!it.done) it.today = tset.has(it.id);
+    const pos = new Map(ids.map((id, i) => [id, i]));
+    const open = iron.items.filter(it => pos.has(it.id))
+      .sort((a, b) => pos.get(a.id) - pos.get(b.id));
+    iron.items = open.concat(iron.items.filter(it => !pos.has(it.id)));
+    render();
+    ironOp(iron.id, { op: "order", ids, today }).catch(() => {});
+    return;
+  }
+  for (const t of todos) if (ids.includes(t.id)) t.today = tset.has(t.id);
   const pos = new Map(ids.map((id, i) => [id, i]));
   // same slot-based reorder as the server: only the dragged list's rows are
   // mentioned, so other lists' todos keep their positions
@@ -631,7 +682,7 @@ function commitOrder() {
   let i = 0;
   todos = todos.map(t => pos.has(t.id) ? mentioned[i++] : t);
   render();
-  api("/api/reorder", { method: "POST", body: JSON.stringify({ ids }) })
+  api("/api/reorder", { method: "POST", body: JSON.stringify({ ids, today }) })
     .then(d => { rev = d.rev; })
     .catch(() => {});
 }

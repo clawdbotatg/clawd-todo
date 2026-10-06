@@ -8,7 +8,9 @@ so UI edits need no restart) and a small REST API:
   GET    /api/todos               -> {"rev": N, "todos": [...]}  (list order = priority)
   POST   /api/todos               {"text": "...", "via": "cli", "list": "todo"} -> todo
   POST   /api/todos/<id>          {"done": true|false, "text": "...", "list": "..."} -> todo
-  POST   /api/reorder             {"ids": [...]} new relative order  -> {"rev": N}
+  POST   /api/reorder             {"ids": [...], "today"?: [...]} new relative
+                                  order; with "today", each mentioned todo's
+                                  ☀️ flag = (id in today)          -> {"rev": N}
   DELETE /api/todos/<id>          -> {"ok": true}
   POST   /api/clear_done          {"list": "todo"} (optional scope)  -> {"removed": N}
 
@@ -24,6 +26,9 @@ pass through to its /todo/bridge with the relay-minted bridge token:
   GET    /api/irons               -> {"irons": [{id, title, items:[...]}]}
   POST   /api/irons               {"iron": id, "op": add|done|undone|rm|clear|order,
                                    "text"?, "ref"?, "ids"?} -> {ok, msg, item}
+The ☀️ today line on iron tabs is ours, not the relay's: an "order" op may
+carry "today": [ids], kept here in STATE["iron_today"] and stamped onto the
+items (today: true) as GET /api/irons passes through.
 
 Auth, two lanes (same stance as the clawd-harness fleet UI):
   - machines: `Authorization: Bearer <token>` or `?t=<token>` — the token
@@ -240,13 +245,15 @@ Every call needs this header:
   -> the new todo (lands on top). Add `"list": "work"` or `"list": "builds"`
   to target those lists; omit for the personal list. Only target another
   list when Austin says it's a work item / a build — default to personal
-  when unsure.
+  when unsure. `"today": true` marks an item Austin dragged above his ☀️
+  today line — what he means to get done today.
 - `POST /api/todos/<id>` with `{"done": true}` to check off, `{"done": false}`
   to reopen, `{"text": "..."}` to edit, `{"list": "work"}` to move lists.
 - `DELETE /api/todos/<id>` — delete.
 - `POST /api/clear_done` with `{"list": "todo"}` — purge that list's finished
   items (omit "list" to purge every list).
-- `POST /api/reorder` with `{"ids": ["<id>", ...]}` — new relative order.
+- `POST /api/reorder` with `{"ids": ["<id>", ...]}` — new relative order
+  (optional `"today": [...]` sets the today flag on the mentioned items).
 
 Examples:
 
@@ -371,7 +378,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/irons":
             if not self._authed():
                 return self._send(401, {"error": "unauthorized"})
-            return self._send(*_irons_call())
+            code, d = _irons_call()
+            if code == 200:
+                with LOCK:
+                    tday = {k: set(v) for k, v in STATE.get("iron_today", {}).items()}
+                for iron in d.get("irons") or []:
+                    mine = tday.get(iron.get("id"), ())
+                    for it in iron.get("items") or []:
+                        it["today"] = it.get("id") in mine
+            return self._send(code, d)
         if path == "/skill.md":
             if not self._authed():
                 return self._send(401, {"error": "unauthorized"})
@@ -414,16 +429,27 @@ class Handler(BaseHTTPRequestHandler):
             b = self._body()
             if not isinstance(b, dict) or not isinstance(b.get("iron"), str):
                 return self._send(400, {"error": "iron required"})
+            if b.get("op") == "order" and isinstance(b.get("today"), list):
+                with LOCK:
+                    STATE.setdefault("iron_today", {})[b["iron"]] = [
+                        i for i in b["today"] if isinstance(i, str)][:500]
+                    _save_state()
             fwd = {k: b[k] for k in ("iron", "op", "text", "ref", "ids") if k in b}
             return self._send(*_irons_call(fwd))
 
         if path == "/api/reorder":
-            ids = self._body().get("ids")
+            body = self._body()
+            ids, today = body.get("ids"), body.get("today")
             if (not isinstance(ids, list) or len(ids) > 10000
                     or not all(isinstance(i, str) for i in ids)):
                 return self._send(400, {"error": "ids must be a list of strings"})
             order = {tid: i for i, tid in enumerate(ids)}
             with LOCK:
+                if isinstance(today, list):
+                    tset = set(i for i in today if isinstance(i, str))
+                    for t in STATE["todos"]:
+                        if t["id"] in order:
+                            t["today"] = t["id"] in tset
                 # Reorder the mentioned todos into the slots they already
                 # occupy; anything unmentioned (races with a concurrent add,
                 # done items the phone doesn't send) keeps its position.
