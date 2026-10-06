@@ -9,6 +9,7 @@ Config: ~/.clawd-todo.env with
 Usage:
     todo                       list open items
     todo list [-a|--all]       list (with --all: also done items)
+    todo today                 open items above the ☀️ today line (every list)
     todo add <text...>         add an item
     todo done <id|substring>   check an item off
     todo undone <id>           reopen an item
@@ -90,7 +91,8 @@ def show(items, all_=False):
             continue
         mark = "x" if t["done"] else " "
         via = f"  (via {t['via']})" if t.get("via") and t["via"] != "web" else ""
-        print(f"[{mark}] {t['id']}  {t['text']}{via}")
+        lst = f"  [{t['list']}]" if t.get("list", "todo") != "todo" else ""
+        print(f"[{mark}] {t['id']}  {t['text']}{lst}{via}")
         shown += 1
     if not shown:
         print("nothing to do" if not all_ else "list is empty")
@@ -102,6 +104,12 @@ def main():
 
     if cmd in ("list", "ls"):
         show(fetch(), all_=any(a in ("-a", "--all") for a in args[1:]))
+    elif cmd == "today":
+        today = [t for t in fetch() if t.get("today") and not t["done"]]
+        if today:
+            show(today)
+        else:
+            print("nothing marked for today")
     elif cmd == "add":
         text = " ".join(args[1:]).strip()
         if not text:

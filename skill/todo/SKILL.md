@@ -15,6 +15,7 @@ todo done <id|words>    # check off (unique substring of the text works)
 todo undone <id>        # reopen
 todo rm <id|words>      # delete
 todo list --all         # include finished items
+todo today              # today's priorities (above his ☀️ today line)
 todo clear              # purge finished items
 todo enroll             # one-time link (15 min) to add a new device's Face ID
 ```
@@ -38,6 +39,9 @@ machine, the token is in the credential store under "clawd-todo".
   first (he drag-orders them in the app — don't reorder unless he asks; the
   API has POST /api/reorder if he does). When asked "what's next", show the
   list and, if you have context, suggest which one fits now.
+- **Today**: items Austin dragged above the ☀️ today line are what he means
+  to get done today — `todo today` lists just those. Start there when he asks
+  what to work on today.
 - An agent on a machine WITHOUT this skill/CLI can be handed the pasteable
   instructions from `GET /skill.md` (authed) — same text the app's
   "🤖 agent instructions" footer shows.
