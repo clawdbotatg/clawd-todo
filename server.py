@@ -237,16 +237,17 @@ Every call needs this header:
 ## Endpoints
 
 - `GET /api/todos` -> `{"rev": N, "todos": [{"id", "text", "done", "created",
-  "done_at", "via", "list"}, ...]}` — list order is Austin's priority order,
-  top first. There are separate lists: `"todo"` (personal, the default —
-  a missing "list" field means "todo"), `"work"`, and `"builds"` (things to
-  build).
+  "done_at", "via", "list", "today"}, ...]}` — list order is Austin's
+  priority order, top first. There are separate lists: `"todo"` (personal,
+  the default — a missing "list" field means "todo"), `"work"`, and
+  `"builds"` (things to build). `"today": true` = Austin dragged it above
+  the ☀️ today line on its list — what he means to get done today; those
+  are his top priority, start there.
 - `POST /api/todos` with `{"text": "buy milk", "via": "<your agent name>"}`
-  -> the new todo (lands on top). Add `"list": "work"` or `"list": "builds"`
-  to target those lists; omit for the personal list. Only target another
-  list when Austin says it's a work item / a build — default to personal
-  when unsure. `"today": true` marks an item Austin dragged above his ☀️
-  today line — what he means to get done today.
+  -> the new todo (lands on top, below the ☀️ line). Add `"list": "work"` or
+  `"list": "builds"` to target those lists; omit for the personal list. Only
+  target another list when Austin says it's a work item / a build — default
+  to personal when unsure.
 - `POST /api/todos/<id>` with `{"done": true}` to check off, `{"done": false}`
   to reopen, `{"text": "..."}` to edit, `{"list": "work"}` to move lists.
 - `DELETE /api/todos/<id>` — delete.
@@ -254,6 +255,14 @@ Every call needs this header:
   items (omit "list" to purge every list).
 - `POST /api/reorder` with `{"ids": ["<id>", ...]}` — new relative order
   (optional `"today": [...]` sets the today flag on the mentioned items).
+  To put ONE item on today without moving anything:
+  `{"ids": ["<id>"], "today": ["<id>"]}`; to take it off: `"today": []`.
+  Only when Austin asks.
+- `GET /api/irons` -> `{"irons": [{id, title, items: [{id, text, done,
+  today, ...}]}]}` — the shared to-do lists of his clawd-harness "irons"
+  (project groups), shown as extra emoji tabs in the app; read-only for you
+  unless Austin asks (writes: `POST /api/irons` `{"iron": id, "op":
+  "add"|"done"|"undone"|"rm", "text"|"ref"}`).
 
 Examples:
 

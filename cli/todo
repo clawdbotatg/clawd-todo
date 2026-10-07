@@ -7,19 +7,25 @@ Config: ~/.clawd-todo.env with
 (or the same names in the environment; env wins.)
 
 Usage:
-    todo                       list open items
+    todo                       list open items (every list)
     todo list [-a|--all]       list (with --all: also done items)
-    todo today                 open items above the ☀️ today line (every list)
-    todo add <text...>         add an item
+    todo today                 open items above the ☀️ today line — every
+                               list, plus each iron tab's ☀️ items
+    todo today <id|substring>  put an item above the ☀️ line (today's)
+    todo later <id|substring>  drop it back below the line
+    todo add <text...>         add an item (to the personal list)
     todo done <id|substring>   check an item off
     todo undone <id>           reopen an item
     todo rm <id|substring>     delete an item
-    todo clear                 remove all done items
+    todo clear                 remove all done items (every list)
     todo enroll                print a one-time link (15 min) that lets a
                                new device register its Face ID / passkey
 
 ids are the 8-hex-char ids shown by `todo list`; anywhere an id is
 accepted, a unique substring of the item's text works too.
+
+-l/--list <name> (anywhere in the args) scopes list/today/add/clear to one
+list: todo (personal, default for add), work, builds.
 Exit codes: 0 ok, 1 error, 2 ambiguous/no match.
 """
 import json
@@ -98,17 +104,54 @@ def show(items, all_=False):
         print("nothing to do" if not all_ else "list is empty")
 
 
+def set_today(needle, on):
+    pool = [x for x in fetch() if not x["done"]]
+    t = resolve(needle, pool)
+    # a one-id reorder moves nothing; "today" just flips that item's ☀️ flag
+    api("POST", "/api/reorder", {"ids": [t["id"]], "today": [t["id"]] if on else []})
+    print(("☀️ today  " if on else "later  ") + t["text"])
+
+
+def iron_today():
+    """☀️ items on the iron tabs; best effort — the irons live on the relay."""
+    try:
+        irons = api("GET", "/api/irons").get("irons") or []
+    except SystemExit:
+        return 0
+    n = 0
+    for iron in irons:
+        for it in iron.get("items") or []:
+            if it.get("today") and not it.get("done"):
+                print(f"[ ] {it['id']}  {it['text']}  [iron: {iron['title']}]")
+                n += 1
+    return n
+
+
 def main():
     args = sys.argv[1:]
+    lst = None
+    for flag in ("-l", "--list"):
+        if flag in args:
+            i = args.index(flag)
+            if i + 1 >= len(args):
+                sys.exit("todo: --list needs a name (todo, work, builds)")
+            lst = args[i + 1]
+            del args[i:i + 2]
     cmd = args[0] if args else "list"
+    pick = lambda items: [t for t in items if lst is None or t.get("list", "todo") == lst]
 
     if cmd in ("list", "ls"):
-        show(fetch(), all_=any(a in ("-a", "--all") for a in args[1:]))
+        show(pick(fetch()), all_=any(a in ("-a", "--all") for a in args[1:]))
+    elif cmd == "today" and args[1:]:
+        set_today(" ".join(args[1:]), True)
+    elif cmd == "later":
+        set_today(" ".join(args[1:]), False)
     elif cmd == "today":
-        today = [t for t in fetch() if t.get("today") and not t["done"]]
+        today = [t for t in pick(fetch()) if t.get("today") and not t["done"]]
         if today:
             show(today)
-        else:
+        n = iron_today() if lst is None else 0
+        if not today and not n:
             print("nothing marked for today")
     elif cmd == "add":
         text = " ".join(args[1:]).strip()
@@ -116,8 +159,9 @@ def main():
             sys.exit("todo: add what?")
         via = os.environ.get("TODO_VIA") or os.environ.get("CLAUDE_PROJECT_DIR", "")
         via = "claude:" + Path(via).name if via else "cli"
-        t = api("POST", "/api/todos", {"text": text, "via": via})
-        print(f"added {t['id']}  {t['text']}")
+        t = api("POST", "/api/todos", {"text": text, "via": via, "list": lst or "todo"})
+        where = f"  [{t['list']}]" if t.get("list", "todo") != "todo" else ""
+        print(f"added {t['id']}  {t['text']}{where}")
     elif cmd == "done":
         t = resolve(" ".join(args[1:]), [x for x in fetch() if not x["done"]])
         api("POST", "/api/todos/" + t["id"], {"done": True})
@@ -131,7 +175,8 @@ def main():
         api("DELETE", "/api/todos/" + t["id"])
         print(f"deleted  {t['text']}")
     elif cmd == "clear":
-        print(f"removed {api('POST', '/api/clear_done')['removed']} done item(s)")
+        body = {"list": lst} if lst else {}
+        print(f"removed {api('POST', '/api/clear_done', body)['removed']} done item(s)")
     elif cmd == "enroll":
         d = api("POST", "/auth/arm_enroll", {})
         print(f"open this on the new device within {d['expires_in'] // 60} min:")
